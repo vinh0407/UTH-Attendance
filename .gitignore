@@ -35,5 +35,13 @@ APP/Máy điểm danh/inbox/*
 .DS_Store
 Thumbs.db
 
-# Local UI review captures
-.impeccable/review/
+# Assistant & Agent Local State
+.agents/
+.codex/
+.impeccable/
+skills-lock.json
+
+# Backup SQLite files
+admin_check/*.sqlite3
+admin_check/*.sqlite3*
+*.sqlite3-journal

@@ -6,7 +6,9 @@ frontends render the returned values; they never recalculate them.
 
 import datetime as dt
 import re
+import uuid
 
+from .enrollment import session_students
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -99,13 +101,9 @@ def session_period_count(session):
 
 
 def next_attendance_id(day):
-    prefix = f"ATT-{day:%Y%m%d}-"
-    numbers = []
-    for value in AttendanceRecord.objects.filter(attendance_id__startswith=prefix).values_list("attendance_id", flat=True):
-        match = re.search(r"-(\d+)$", value or "")
-        if match:
-            numbers.append(int(match.group(1)))
-    return f"{prefix}{(max(numbers, default=0) + 1):04d}"
+    # A random identifier avoids max()+1 collisions across sessions/workers.
+    # 96 random bits fit the existing 40-character field and keep the date prefix.
+    return f"ATT-{day:%Y%m%d}-{uuid.uuid4().hex[:24]}"
 
 
 def session_external_id(session):
@@ -179,7 +177,7 @@ def record_attendance_event(
         raise ValueError("An attendance session is required")
     if require_active and session.status != "active":
         raise ValueError("Session is not active")
-    if not session.schedule.classroom.students.filter(pk=student.pk).exists():
+    if not session_students(session).filter(pk=student.pk).exists():
         raise ValueError("WRONG_CLASS: student is not enrolled in this class")
 
     check_in_dt = _as_datetime(check_in_at or timezone.now(), session.date)
@@ -222,7 +220,7 @@ def record_attendance_event(
         record = AttendanceRecord.objects.get(session=session, student=student)
         return record, False, timing
     from .attendance_archive import archive_attendance_record
-    transaction.on_commit(lambda: archive_attendance_record(record))
+    transaction.on_commit(lambda: archive_attendance_record(record), robust=True)
     return record, True, timing
 
 
@@ -251,7 +249,7 @@ def record_absence_event(*, session, student, device_id='SYSTEM-FINALIZE', prefe
         notes='Absent when the class session was finalized',
     )
     from .attendance_archive import archive_attendance_record
-    transaction.on_commit(lambda: archive_attendance_record(record))
+    transaction.on_commit(lambda: archive_attendance_record(record), robust=True)
     return record, True
 
 
@@ -261,7 +259,7 @@ def finalize_session_attendance(session):
     from .models import Student
     existing = set(session.session_records.values_list('student_id', flat=True))
     created = 0
-    for student in session.schedule.classroom.students.all().order_by('student_id'):
+    for student in session_students(session).order_by('student_id'):
         if student.id not in existing:
             _, was_created = record_absence_event(session=session, student=student)
             created += int(was_created)

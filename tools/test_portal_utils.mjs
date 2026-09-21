@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {nextLesson,normalize,esc,weekDates} from '../APP/Portal/portal-utils.mjs';
+const rows=[{subject_id:'A',time_range:'7:00 - 9:40',session_status:'scheduled'},{subject_id:'B',time_range:'10:00 - 11:40',session_status:'cancelled'}];
+assert.equal(nextLesson(rows,450).subject_id,'A');
+assert.equal(nextLesson(rows,400).subject_id,'A');
+assert.equal(nextLesson(rows,581),null);
+assert.equal(nextLesson([{...rows[0],session_status:'postponed'}],400),null);
+assert.equal(normalize('Điểm danh'),'diem danh');
+assert.equal(esc('<script>'),'&lt;script&gt;');
+assert.deepEqual(weekDates('2026-09-20'),['2026-09-14','2026-09-15','2026-09-16','2026-09-17','2026-09-18','2026-09-19','2026-09-20']);
+console.log('PASS: ongoing lessons, cancelled/postponed, search, escaping, week boundaries');

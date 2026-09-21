@@ -1,15 +1,193 @@
 {% extends 'base.html' %}
 {% load static %}
-{% block title %}Attendance session{% endblock %}
+
+{% block title %}Attendance Session #{{ session.id }} · {{ session.schedule.subject.name }} · UTH{% endblock %}
+
 {% block content %}
 <div class="app-shell">
- <aside class="app-sidebar" aria-label="Main navigation"><a class="brand" href="{% url 'portal:home' %}"><img src="{% static 'img/uth-logo.png' %}" alt="University of Transport Ho Chi Minh City logo"><span>Attendance<br><strong>Management</strong><small>UTH · Student operations</small></span></a><nav class="side-nav"><a href="{% url 'portal:admin_dashboard' %}"><span class="material-symbols-outlined">dashboard</span>Overview</a><a href="{% url 'portal:admin_dashboard' %}#students"><span class="material-symbols-outlined">groups</span>Students</a><a class="is-active" href="{% url 'portal:schedule' %}"><span class="material-symbols-outlined">calendar_month</span>Classes & sessions</a><a href="{% url 'portal:admin_dashboard' %}#attendance"><span class="material-symbols-outlined">history</span>Attendance history</a></nav><div class="sidebar-foot"><span class="status-dot"></span> System operational</div></aside>
- <main class="app-main schedule-main"><header class="page-header"><div><p class="eyebrow">ATTENDANCE SESSION #{{ session.id }}</p><h1>{{ session.schedule.subject.name }}</h1><p class="muted">{{ session.schedule.classroom.class_id }} · {{ session.schedule.classroom.name }} · {{ session.date|date:'l, d F Y' }}</p></div><div class="header-actions"><span class="status status-{{ session.status }}">{{ session.status|title }}</span><a class="button button-secondary" href="{% url 'portal:schedule' %}">Back to schedule</a>{% if session.status == 'active' %}<button class="button button-secondary" type="button" onclick="postponeSession({{ session.id }})">Postpone</button><a class="button button-primary" href="{% url 'portal:end_session' session.id %}">End session</a>{% endif %}</div></header>
-  <section class="metric-grid"><article class="metric-card metric-accent"><span class="metric-label">Present</span><strong>{{ attended_count }}</strong><span class="metric-note">Recorded in this session</span></article><article class="metric-card"><span class="metric-label">Class roster</span><strong>{{ total_students }}</strong><span class="metric-note">Students enrolled</span></article><article class="metric-card"><span class="metric-label">Start time</span><strong class="session-value">{{ session.start_time|date:'H:i'|default:'—' }}</strong><span class="metric-note">Session schedule</span></article><article class="metric-card"><span class="metric-label">Room</span><strong class="session-value">{{ session.schedule.room|default:'—' }}</strong><span class="metric-note">Location</span></article></section>
-  <section class="panel"><div class="panel-head"><div><p class="eyebrow">SESSION ROSTER</p><h2>Attendance records</h2></div><div class="header-actions"><a class="button button-secondary" href="{% url 'portal:api_export_session_csv' session.id %}">Export CSV</a><span class="live-label">Records are received from the kiosk app</span></div></div><div class="table-wrap"><table><caption class="sr-only">Attendance roster for this session</caption><thead><tr><th>Student ID</th><th>Student</th><th>Class</th><th>Check-in</th><th>Status</th><th>Late</th><th>Periods</th><th>Device</th><th>Method</th></tr></thead><tbody>{% for item in roster %}{% with student=item.student record=item.record %}<tr><td class="mono">{{ student.student_id }}</td><td><strong>{{ student.full_name }}</strong></td><td>{{ student.class_name|default:'—' }}</td><td class="mono">{% if record %}{{ record.time_in|time:'H:i:s' }}{% else %}—{% endif %}</td><td>{% if record %}<span class="status status-{{ record.status }}">{{ record.attendance_label|default:record.status|title }}</span>{% elif session.status == 'active' %}<span class="status">Not checked in</span>{% else %}<span class="status status-absent">Absent</span>{% endif %}</td><td>{% if record %}{{ record.late_minutes }} min{% else %}—{% endif %}</td><td>{% if record and record.attendance_periods != None %}{{ record.attendance_periods }}{% else %}—{% endif %}</td><td>{% if record %}{{ record.device_id|default:'—' }}{% else %}—{% endif %}</td><td>{% if record %}{{ record.method }}{% else %}—{% endif %}</td></tr>{% endwith %}{% empty %}<tr><td colspan="9" class="empty-state">No students are assigned to this class.</td></tr>{% endfor %}</tbody></table></div></section>
- </main>
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar app-sidebar" aria-label="Main navigation">
+        <a class="brand" href="{% url 'portal:admin_dashboard' %}">
+            <img src="{% static 'img/uth-logo.png' %}" alt="UTH Logo" width="40" height="40">
+            <span>
+                <strong>UTH<span class="brand-dot">.</span></strong>
+                <small>UTH Operations · Management & Academic Portal</small>
+            </span>
+        </a>
+
+        <span class="nav-caption">ACADEMIC MANAGEMENT</span>
+        <nav class="side-nav">
+            <a href="{% url 'portal:admin_dashboard' %}#live">
+                <i class="ph ph-squares-four" aria-hidden="true"></i>
+                <span>Overview & Live</span>
+            </a>
+            <a href="{% url 'portal:admin_dashboard' %}#students">
+                <i class="ph ph-users-three" aria-hidden="true"></i>
+                <span>Students Directory</span>
+            </a>
+            <a href="{% url 'portal:admin_dashboard' %}#grades">
+                <i class="ph ph-chart-bar" aria-hidden="true"></i>
+                <span>Grades & Audit Log</span>
+            </a>
+            <a href="{% url 'portal:admin_dashboard' %}#schedule" class="is-active">
+                <i class="ph ph-calendar-blank" aria-hidden="true"></i>
+                <span>Classes & Sessions</span>
+            </a>
+            <a href="{% url 'portal:admin_dashboard' %}#face-reg">
+                <i class="ph ph-scan" aria-hidden="true"></i>
+                <span>Face Registration</span>
+            </a>
+        </nav>
+
+        <span class="nav-caption" style="margin-top: 18px;">SYSTEM LINKS</span>
+        <nav class="side-nav">
+            <a href="{% url 'portal:student_portal' %}" target="_blank">
+                <i class="ph ph-student" aria-hidden="true"></i>
+                <span>Student Portal</span>
+                <i class="ph ph-arrow-up-right" style="font-size: 13px; margin-left: auto;"></i>
+            </a>
+            <a href="{% url 'portal:attendance_kiosk' %}" target="_blank">
+                <i class="ph ph-camera" aria-hidden="true"></i>
+                <span>Attendance Kiosk</span>
+                <i class="ph ph-arrow-up-right" style="font-size: 13px; margin-left: auto;"></i>
+            </a>
+        </nav>
+
+        <div class="sidebar-bottom">
+            <div class="sidebar-status-box">
+                <span class="status-dot"></span>
+                <span>Attendance session active</span>
+            </div>
+            <div class="sidebar-profile">
+                <span class="avatar">AD</span>
+                <span style="min-width: 0; flex: 1;">
+                    <strong>UTH Admin Board</strong>
+                    <small>admin@uth.edu.vn</small>
+                </span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Workspace Area -->
+    <div class="workspace app-main" id="main-content">
+        <!-- Topbar -->
+        <header class="topbar">
+            <div class="breadcrumb">
+                <a href="{% url 'portal:admin_dashboard' %}#schedule" class="muted" style="text-decoration: underline;">Classes & Sessions</a>
+                <i class="ph ph-caret-right" aria-hidden="true"></i>
+                <strong>Session #{{ session.id }} · {{ session.schedule.subject.name }}</strong>
+            </div>
+
+            <div class="topbar-actions">
+                <a class="button button-secondary button-sm" href="{% url 'portal:admin_dashboard' %}#schedule">
+                    <i class="ph ph-arrow-left"></i>
+                    <span>Back to Schedule</span>
+                </a>
+                <button class="button button-secondary button-sm" type="button" onclick="location.reload()">
+                    <i class="ph ph-arrow-clockwise"></i>
+                    <span>Refresh</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="content-container">
+            <header class="page-header">
+                <div>
+                    <span class="eyebrow">ATTENDANCE SESSION #{{ session.id }}</span>
+                    <h1>{{ session.schedule.subject.name }}</h1>
+                    <p class="muted">Class: <strong>{{ session.schedule.classroom.class_id }}</strong> ({{ session.schedule.classroom.name }}) · Date: <strong>{{ session.date|date:'l, F d, Y' }}</strong></p>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    {% if session.status == 'active' %}
+                    <span class="status status-present"><span class="status-dot"></span> In Progress</span>
+                    <button class="button button-secondary button-sm" type="button" onclick="postponeSession({{ session.id }})">
+                        <i class="ph ph-pause"></i> Postpone
+                    </button>
+                    <a class="button button-primary button-sm" href="{% url 'portal:end_session' session.id %}">
+                        <i class="ph ph-stop"></i> End & Finalize
+                    </a>
+                    {% else %}
+                    <span class="status status-absent">Completed</span>
+                    {% endif %}
+                </div>
+            </header>
+
+            <!-- Metrics -->
+            <section class="metric-grid">
+                <article class="metric-card metric-accent">
+                    <div class="metric-header">
+                        <span class="metric-label">Present</span>
+                        <i class="ph ph-check-circle" aria-hidden="true"></i>
+                    </div>
+                    <strong id="session-present-count">{{ attended_count }}</strong>
+                    <span class="metric-note">Recorded in this session</span>
+                </article>
+
+                <article class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-label">Class Roster</span>
+                        <i class="ph ph-users" aria-hidden="true"></i>
+                    </div>
+                    <strong>{{ total_students }}</strong>
+                    <span class="metric-note">Students officially enrolled</span>
+                </article>
+
+                <article class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-label">Start Time</span>
+                        <i class="ph ph-clock" aria-hidden="true"></i>
+                    </div>
+                    <strong>{{ session.start_time|date:'H:i'|default:'—' }}</strong>
+                    <span class="metric-note">Timespan: {{ session.schedule.get_time_range }}</span>
+                </article>
+
+                <article class="metric-card">
+                    <div class="metric-header">
+                        <span class="metric-label">Classroom</span>
+                        <i class="ph ph-map-pin" aria-hidden="true"></i>
+                    </div>
+                    <strong>{{ session.schedule.room|default:'Unassigned' }}</strong>
+                    <span class="metric-note">Lecturer: {{ session.schedule.subject.teacher|default:'TBA' }}</span>
+                </article>
+            </section>
+
+            <!-- Review Panel -->
+            <div class="card" style="padding: 0; overflow: hidden;">
+                {% include 'portal/session_review_panel.html' %}
+            </div>
+        </main>
+    </div>
 </div>
 {% endblock %}
-{% block extra_js %}<script>
-async function postponeSession(sessionId){const postponedTo=window.prompt('New date (YYYY-MM-DD), optional:','');if(postponedTo===null)return;const reason=window.prompt('Reason, optional:','');const response=await fetch('/api/session/'+sessionId+'/postpone/',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrfToken()},body:JSON.stringify({postponed_to:postponedTo,reason:reason||''})});const data=await response.json();if(!response.ok||!data.success){alert(data.error||'Could not postpone session');return;}location.href='{% url 'portal:schedule' %}';}
-</script>{% endblock %}
+
+{% block extra_js %}
+<script>
+async function postponeSession(sessionId){
+    const postponedTo = window.prompt('Enter new date for postponed session (YYYY-MM-DD), leave blank if unset:','');
+    if (postponedTo === null) return;
+    const reason = window.prompt('Reason for postponement:','');
+    try {
+        const response = await fetch('/api/session/' + sessionId + '/postpone/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken()
+            },
+            body: JSON.stringify({postponed_to: postponedTo, reason: reason || ''})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            showToast(data.error || 'Failed to postpone session', 'error');
+            return;
+        }
+        showToast('Session postponed successfully', 'success');
+        setTimeout(() => {
+            location.href = '{% url "portal:admin_dashboard" %}#schedule';
+        }, 800);
+    } catch(error) {
+        showToast('Server connection error', 'error');
+    }
+}
+</script>
+{% endblock %}

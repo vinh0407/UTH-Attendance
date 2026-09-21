@@ -1,6 +1,9 @@
 from django.urls import path
 from . import views
 from . import extra_views
+from . import recognition_views
+from . import review_views
+from . import academic_views
 
 app_name = 'portal'
 
@@ -13,6 +16,7 @@ urlpatterns = [
     path('kiosk/<path:path>', views.attendance_kiosk_asset, name='attendance_kiosk_asset'),
     path('admin-dashboard/', views.admin_dashboard, name='admin_dashboard'),
     path('register/', views.register_face, name='register'),
+    path('static/<path:path>', views.static_asset, name='static_asset'),
 
     # Thoi khoa bieu va Diem danh theo buoi
     path('schedule/', views.schedule_view, name='schedule'),
@@ -20,6 +24,8 @@ urlpatterns = [
     path('session/<int:session_id>/', views.attendance_session, name='attendance_session'),
     path('session/<int:session_id>/end/', views.end_attendance_session, name='end_session'),
     path('api/session/<int:session_id>/finalize/', views.api_finalize_session, name='api_finalize_session'),
+    path('api/session/<int:session_id>/review/', review_views.report, name='api_session_review'),
+    path('api/session/<int:session_id>/review/<int:student_id>/', review_views.correct, name='api_correct_attendance'),
 
     # API Endpoints
     path('api/stats/', views.api_stats, name='api_stats'),
@@ -30,7 +36,7 @@ urlpatterns = [
     # Face Recognition APIs
     path('api/face-engine/status/', views.api_face_engine_status, name='api_face_engine_status'),
     path('api/register-face/', views.api_register_face, name='api_register_face'),
-    path('api/recognize-face/', views.api_recognize_face, name='api_recognize_face'),
+    path('api/recognize-face/', recognition_views.recognize, name='api_recognize_face'),
     path('api/registered-faces/', views.api_registered_faces, name='api_registered_faces'),
 
     # Schedule & Session APIs
@@ -51,6 +57,7 @@ urlpatterns = [
     # Authenticated student portal APIs
     path('api/student/login/', views.api_student_login, name='api_student_login'),
     path('api/student/logout/', views.api_student_logout, name='api_student_logout'),
+    path('api/student/me/change-password/', views.api_student_change_password, name='api_student_change_password'),
     path('api/student/me/dashboard/', views.api_student_dashboard, name='api_student_dashboard'),
     path('api/student/me/profile/', views.api_student_profile, name='api_student_profile'),
     path('api/student/me/schedule/today/', views.api_student_schedule_today, name='api_student_schedule_today'),
@@ -58,8 +65,20 @@ urlpatterns = [
     path('api/student/me/attendance/summary/', views.api_student_attendance_summary, name='api_student_attendance_summary'),
     path('api/student/me/grades/', views.api_student_grades, name='api_student_grades'),
     path('api/student/me/subjects/summary/', views.api_student_subject_summary, name='api_student_subject_summary'),
+    path('api/student/me/leave-requests/', views.api_student_leave_requests, name='api_student_leave_requests'),
+    path('api/student/me/leave-requests/create/', views.api_student_create_leave_request, name='api_student_create_leave_request'),
+
+    path('api/student/me/academics/', academic_views.academics),
+    path('api/student/me/registrations/', academic_views.registrations),
+    path('api/student/me/registrations/<int:registration_id>/cancel/', academic_views.cancel),
+    path('api/student/me/classmates/', academic_views.classmates),
 
     # Admin APIs
+    path('api/admin/grades/update/', views.api_admin_update_grade, name='api_admin_update_grade'),
+    path('api/admin/grades/template.csv', views.api_admin_grade_template_csv, name='api_admin_grade_template_csv'),
+    path('api/admin/grades/import.csv', views.api_admin_import_grades_csv, name='api_admin_import_grades_csv'),
+    path('api/admin/leave-requests/', views.api_admin_leave_requests, name='api_admin_leave_requests'),
+    path('api/admin/leave-requests/<int:request_id>/review/', views.api_admin_review_leave_request, name='api_admin_review_leave_request'),
     path('api/delete-student/<int:student_id>/', views.api_delete_student, name='api_delete_student'),
     path('api/update-student/<int:student_id>/', views.api_update_student, name='api_update_student'),
 

@@ -1,15 +1,1377 @@
 {% extends 'base.html' %}
 {% load static %}
-{% block title %}Attendance management{% endblock %}
+
+{% block title %}Admin & Operations Dashboard · UTH Attendance{% endblock %}
+
 {% block content %}
 <div class="app-shell">
-<aside class="app-sidebar" aria-label="Main navigation"><a class="brand" href="{% url 'portal:home' %}"><img src="{% static 'img/uth-logo.png' %}" alt="University of Transport Ho Chi Minh City logo"><span>Attendance<br><strong>Management</strong><small>UTH · Student operations</small></span></a><nav class="side-nav"><a class="is-active" href="{% url 'portal:admin_dashboard' %}"><span class="material-symbols-outlined">dashboard</span>Overview</a><a href="#students"><span class="material-symbols-outlined">groups</span>Students</a><a href="{% url 'portal:schedule' %}"><span class="material-symbols-outlined">calendar_month</span>Classes & sessions</a><a href="#attendance"><span class="material-symbols-outlined">history</span>Attendance history</a></nav><div class="sidebar-foot"><span class="status-dot"></span> System operational</div></aside>
- <main class="app-main" id="main-content"><header class="page-header"><div><p class="eyebrow">ATTENDANCE CONTROL CENTER</p><h1>Today at a glance</h1><p class="muted">Track students, classes and attendance records in one place.</p></div><div class="header-actions"><span class="date-stamp">{{ today|date:'D, d M' }}</span><a class="button button-secondary" href="/api/export/all.csv">Export all CSV</a></div></header>
-  <section class="metric-grid" aria-label="Today's overview"><article class="metric-card metric-accent"><span class="metric-label">Total students</span><strong>{{ total_students }}</strong><span class="metric-note">In the management database</span></article><article class="metric-card"><span class="metric-label">Present</span><strong>{{ today_present }}</strong><span class="metric-note positive">Checked in today</span></article><article class="metric-card"><span class="metric-label">Late</span><strong>{{ today_late }}</strong><span class="metric-note warning">Needs review</span></article><article class="metric-card"><span class="metric-label">Not checked in</span><strong>{{ today_absent }}</strong><span class="metric-note">Based on the student roster</span></article></section>
-  <section class="content-grid"><article class="panel panel-wide" id="attendance"><div class="panel-head"><div><p class="eyebrow">ACTIVITY LOG</p><h2>Recent attendance</h2></div><span class="live-label"><span class="status-dot"></span> Live data</span></div><div class="table-wrap"><table><caption class="sr-only">Recent attendance history</caption><thead><tr><th>Student ID</th><th>Student</th><th>Time</th><th>Method</th><th>Status</th><th>Confidence</th></tr></thead><tbody>{% for record in recent_records %}<tr><td class="mono">{{ record.student.student_id }}</td><td><strong>{{ record.student.full_name }}</strong><small>{{ record.student.class_name|default:'Class not set' }}</small></td><td class="mono">{{ record.time_in|time:'H:i:s'|default:'—' }}<small>{{ record.date|date:'d/m/Y' }}</small></td><td>{{ record.camera_id|default:'Face recognition' }}</td><td><span class="status status-{{ record.status }}">{{ record.status|title }}</span></td><td class="mono">{% if record.confidence %}{{ record.confidence|floatformat:1 }}%{% else %}—{% endif %}</td></tr>{% empty %}<tr><td colspan="6" class="empty-state">No attendance records yet.</td></tr>{% endfor %}</tbody></table></div></article></section>
-  <section class="panel students-panel" id="students"><div class="panel-head"><div><p class="eyebrow">STUDENT DIRECTORY</p><h2>Students</h2></div><div class="student-tools"><label class="search-box"><span>⌕</span><input id="studentSearch" type="search" placeholder="Search ID or name..." aria-label="Search students"></label><a class="button button-secondary" href="#face-registration">Register face</a></div></div><div class="table-wrap"><table id="studentsTable"><caption class="sr-only">Student directory</caption><thead><tr><th>Student ID</th><th>Name</th><th>Class</th><th>Email</th><th>Face ID</th><th>Created</th><th></th></tr></thead><tbody>{% for student in students %}<tr id="student-row-{{ student.id }}"><td class="mono">{{ student.student_id }}</td><td><strong>{{ student.full_name }}</strong></td><td>{{ student.class_name|default:'—' }}</td><td>{{ student.email|default:'—' }}</td><td>{% if student.is_registered %}<span class="status status-present">Registered</span>{% else %}<span class="status status-absent">Not registered</span>{% endif %}</td><td class="mono">{{ student.created_at|date:'d/m/Y' }}</td><td><button class="text-button" type="button" onclick="openEditModal('{{ student.id }}','{{ student.student_id|escapejs }}','{{ student.full_name|escapejs }}','{{ student.class_name|escapejs }}','{{ student.email|escapejs }}')">Edit</button><button class="text-button danger" type="button" onclick="deleteStudent('{{ student.id }}','{{ student.full_name|escapejs }}')">Delete</button></td></tr>{% empty %}<tr><td colspan="7" class="empty-state">No students in the database.</td></tr>{% endfor %}</tbody></table></div></section>
-  {% include 'portal/face_registration_panel.html' %}
- </main></div>
-<div id="editModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editTitle"><div class="modal-card"><div class="panel-head"><h2 id="editTitle">Edit student</h2><button class="icon-button" type="button" onclick="closeEditModal()" aria-label="Close">×</button></div><form id="editForm" onsubmit="saveStudent(event)"><input type="hidden" id="editStudentId"><label>Student ID<input id="editStudentCode" required></label><label>Full name<input id="editFullName" required></label><label>Class<input id="editClassName"></label><label>Email<input id="editEmail" type="email"></label><div class="modal-actions"><button class="button button-secondary" type="button" onclick="closeEditModal()">Cancel</button><button class="button button-primary" type="submit">Save changes</button></div></form></div></div>
+    <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar app-sidebar" aria-label="Main navigation">
+        <a class="brand" href="{% url 'portal:admin_dashboard' %}">
+            <img src="{% static 'img/uth-logo.png' %}" alt="UTH Logo" width="40" height="40">
+            <span>
+                <strong>UTH<span class="brand-dot">.</span></strong>
+                <small>UTH Operations · Management & Academic Portal</small>
+            </span>
+        </a>
+
+        <span class="nav-caption">ACADEMIC MANAGEMENT</span>
+        <nav class="side-nav">
+            <a href="javascript:void(0)" class="dash-nav-link is-active" data-tab="tab-live">
+                <i class="ph ph-squares-four" aria-hidden="true"></i>
+                <span>Overview & Live</span>
+            </a>
+            <a href="javascript:void(0)" class="dash-nav-link" data-tab="tab-students">
+                <i class="ph ph-users-three" aria-hidden="true"></i>
+                <span>Students Directory</span>
+            </a>
+            <a href="javascript:void(0)" class="dash-nav-link" data-tab="tab-grades">
+                <i class="ph ph-chart-bar" aria-hidden="true"></i>
+                <span>Grades & Audit Log</span>
+            </a>
+            <a href="javascript:void(0)" class="dash-nav-link" data-tab="tab-schedule">
+                <i class="ph ph-calendar-blank" aria-hidden="true"></i>
+                <span>Classes & Sessions</span>
+            </a>
+            <a href="javascript:void(0)" class="dash-nav-link" data-tab="tab-face-reg">
+                <i class="ph ph-scan" aria-hidden="true"></i>
+                <span>Face Registration</span>
+            </a>
+        </nav>
+
+        <span class="nav-caption" style="margin-top: 18px;">SYSTEM LINKS</span>
+        <nav class="side-nav">
+            <a href="{% url 'portal:student_portal' %}" target="_blank">
+                <i class="ph ph-student" aria-hidden="true"></i>
+                <span>Student Portal</span>
+                <i class="ph ph-arrow-up-right" style="font-size: 13px; margin-left: auto;"></i>
+            </a>
+            <a href="{% url 'portal:attendance_kiosk' %}" target="_blank">
+                <i class="ph ph-camera" aria-hidden="true"></i>
+                <span>Attendance Kiosk</span>
+                <i class="ph ph-arrow-up-right" style="font-size: 13px; margin-left: auto;"></i>
+            </a>
+        </nav>
+
+        <div class="sidebar-bottom">
+            <div class="sidebar-status-box">
+                <span class="status-dot"></span>
+                <span>System operational</span>
+            </div>
+            <div class="sidebar-profile">
+                <span class="avatar">AD</span>
+                <span style="min-width: 0; flex: 1;">
+                    <strong>UTH Admin Board</strong>
+                    <small>admin@uth.edu.vn</small>
+                </span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Workspace Area -->
+    <div class="workspace app-main" id="main-content">
+        <!-- Topbar -->
+        <header class="topbar">
+            <button class="mobile-menu-toggle" id="mobileMenuBtn" type="button" aria-label="Toggle navigation menu" title="Open navigation">
+                <i class="ph ph-list" aria-hidden="true"></i>
+            </button>
+            <div class="breadcrumb">
+                <span>Management Workspace</span>
+                <i class="ph ph-caret-right" aria-hidden="true"></i>
+                <strong id="pageLabel">Overview & Live</strong>
+            </div>
+
+            <div class="topbar-actions">
+                <div class="topbar-pill">
+                    <i class="ph ph-calendar" aria-hidden="true"></i>
+                    <span id="dashDateStamp">{{ today|date:"l, F d, Y" }}</span>
+                </div>
+                <div class="topbar-pill">
+                    <i class="ph ph-clock" aria-hidden="true"></i>
+                    <span id="dashClock">--:--:--</span>
+                </div>
+                <button class="button button-secondary button-sm" type="button" onclick="location.reload()" title="Refresh page data">
+                    <i class="ph ph-arrow-clockwise" aria-hidden="true"></i>
+                    <span>Refresh</span>
+                </button>
+                <a class="button button-primary button-sm" href="/api/export/all.csv" title="Export complete attendance database to CSV">
+                    <i class="ph ph-download-simple" aria-hidden="true"></i>
+                    <span>Export CSV</span>
+                </a>
+                <span class="avatar" title="Administrator">AD</span>
+            </div>
+        </header>
+
+        <!-- Main Content Container -->
+        <main class="content-container">
+            <!-- Page Header (Hidden, referenced by tab JS) -->
+            <header class="page-header" style="display: none;">
+                <div>
+                    <h1 id="pageHeadingTitle">Academic Operations &amp; Live Verification</h1>
+                    <p id="pageHeadingDesc">Monitor real-time classroom attendance, manage student profiles, teaching schedules, and academic evaluations.</p>
+                </div>
+            </header>
+
+            <!-- Executive Admin Hero Banner -->
+            <section class="admin-hero-banner" aria-label="Executive Operations Overview">
+                <div class="admin-hero-content">
+                    <div class="admin-hero-tag">
+                        <span class="pulse-dot" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#10b981; margin-right:6px;"></span>
+                        UTH Executive Terminal · Smart Attendance Hub
+                    </div>
+                    <h1>Central Operations &amp; Verification Hub</h1>
+                    <p>Live campus attendance telemetry, automated biometric face check-in, academic directories, and institutional audit records.</p>
+                </div>
+                <div class="admin-hero-stats">
+                    <div class="hero-stat-box">
+                        <span class="stat-caption">Active Sessions</span>
+                        <strong class="stat-num">{{ today_sessions|length }}</strong>
+                    </div>
+                    <div class="hero-stat-box">
+                        <span class="stat-caption">Pending Leaves</span>
+                        <strong class="stat-num">{{ pending_leaves|length }}</strong>
+                    </div>
+                </div>
+            </section>
+
+            <!-- KPI Metrics Grid -->
+            <section class="metric-grid" aria-label="Today system KPI metrics">
+                <article class="metric-card metric-accent">
+                    <div class="metric-header">
+                        <div>
+                            <span class="metric-label">Total Students</span>
+                            <strong>{{ total_students }}</strong>
+                        </div>
+                        <div class="metric-icon-wrap">
+                            <i class="ph ph-users" aria-hidden="true"></i>
+                        </div>
+                    </div>
+                    <span class="metric-note">University student roster</span>
+                </article>
+
+                <article class="metric-card metric-success">
+                    <div class="metric-header">
+                        <div>
+                            <span class="metric-label">Present Today</span>
+                            <strong>{{ today_present }}</strong>
+                        </div>
+                        <div class="metric-icon-wrap">
+                            <i class="ph ph-check-circle" aria-hidden="true"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <span class="metric-note" style="color: var(--success); font-weight: 600;">{{ attendance_rate }}% attendance rate</span>
+                        <div class="metric-progress" title="{{ attendance_rate }}% students present">
+                            <div class="metric-progress-bar" style="width: {{ attendance_rate }}%;"></div>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="metric-card metric-warning">
+                    <div class="metric-header">
+                        <div>
+                            <span class="metric-label">Late Check-ins</span>
+                            <strong>{{ today_late }}</strong>
+                        </div>
+                        <div class="metric-icon-wrap">
+                            <i class="ph ph-clock-countdown" aria-hidden="true"></i>
+                        </div>
+                    </div>
+                    <span class="metric-note" style="color: var(--warning);">Requires excuse or review</span>
+                </article>
+
+                <article class="metric-card metric-danger">
+                    <div class="metric-header">
+                        <div>
+                            <span class="metric-label">Unrecorded / Absent</span>
+                            <strong>{{ today_absent }}</strong>
+                        </div>
+                        <div class="metric-icon-wrap">
+                            <i class="ph ph-user-minus" aria-hidden="true"></i>
+                        </div>
+                    </div>
+                    <span class="metric-note">Based on scheduled courses today</span>
+                </article>
+            </section>
+
+            <!-- Segmented Navigation Tabs -->
+            <div class="dashboard-tabs" role="tablist">
+                <button class="dash-tab-btn is-active" data-tab="tab-live" role="tab">
+                    <i class="ph ph-activity" aria-hidden="true"></i>
+                    <span>Live Activity</span>
+                    <span class="tab-badge">{{ recent_records|length }}</span>
+                </button>
+                <button class="dash-tab-btn" data-tab="tab-students" role="tab">
+                    <i class="ph ph-student" aria-hidden="true"></i>
+                    <span>Students Directory</span>
+                    <span class="tab-badge">{{ total_students }}</span>
+                </button>
+                <button class="dash-tab-btn" data-tab="tab-grades" role="tab">
+                    <i class="ph ph-chart-line-up" aria-hidden="true"></i>
+                    <span>Grades & Audit Log</span>
+                    <span class="tab-badge">{{ recent_audits|length }}</span>
+                </button>
+                <button class="dash-tab-btn" data-tab="tab-schedule" role="tab">
+                    <i class="ph ph-calendar" aria-hidden="true"></i>
+                    <span>Classes & Sessions</span>
+                    <span class="tab-badge">{{ today_sessions|length }}</span>
+                </button>
+                <button class="dash-tab-btn" data-tab="tab-face-reg" role="tab">
+                    <i class="ph ph-camera-plus" aria-hidden="true"></i>
+                    <span>Face Registration</span>
+                </button>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- TAB 1: LIVE ATTENDANCE & LEAVE REQUEST REVIEW                -->
+            <!-- ============================================================ -->
+            <div id="tab-live" class="tab-pane">
+                <!-- Pending Leaves Review Section -->
+                {% if pending_leaves %}
+                <section class="card" style="border-left: 4px solid var(--warning); margin-bottom: 24px;">
+                    <div class="section-heading">
+                        <div>
+                            <span class="eyebrow" style="color: var(--warning);">ACTION REQUIRED</span>
+                            <h2>Pending Leave Applications <span class="tab-badge" style="background: var(--warning-bg); color: var(--warning);">{{ pending_leaves|length }}</span></h2>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Student ID</th>
+                                    <th>Full Name</th>
+                                    <th>Course</th>
+                                    <th>Session Date</th>
+                                    <th>Reason</th>
+                                    <th>Attachment</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for leave in pending_leaves %}
+                                <tr id="leave-row-{{ leave.id }}">
+                                    <td class="mono font-semibold">{{ leave.student.student_id }}</td>
+                                    <td><strong>{{ leave.student.full_name }}</strong><small>{{ leave.student.class_name }}</small></td>
+                                    <td>{{ leave.subject.name }}</td>
+                                    <td class="mono">{{ leave.session_date|date:"M d, Y" }}</td>
+                                    <td style="max-width: 250px; white-space: normal;">{{ leave.reason }}</td>
+                                    <td>
+                                        {% if leave.document %}
+                                        <a class="button button-secondary button-sm" href="{{ leave.document.url }}" target="_blank">
+                                            <i class="ph ph-file-text"></i> View File
+                                        </a>
+                                        {% else %}
+                                        <span class="muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <div style="display: flex; gap: 6px;">
+                                            <button class="button button-sm primary" type="button" onclick="reviewLeave({{ leave.id }}, 'approve')">
+                                                <i class="ph ph-check"></i> Approve
+                                            </button>
+                                            <button class="button button-sm secondary" style="color: var(--danger); border-color: var(--danger-bg);" type="button" onclick="reviewLeave({{ leave.id }}, 'reject')">
+                                                <i class="ph ph-x"></i> Reject
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                {% endif %}
+
+                <!-- Recent Live Attendance Stream -->
+                <section class="card" id="attendance">
+                    <div class="section-heading">
+                        <div>
+                            <span class="eyebrow">REAL-TIME ATTENDANCE STREAM</span>
+                            <h2>Latest Check-in Activity</h2>
+                        </div>
+                        <div class="filter-bar">
+                            <label class="search-field">
+                                <i class="ph ph-magnifying-glass"></i>
+                                <input id="liveSearch" type="search" placeholder="Filter by Student ID or name..." aria-label="Search check-in log">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table class="data-table" id="liveTable">
+                            <caption class="sr-only">Recent attendance activity log</caption>
+                            <thead>
+                                <tr>
+                                    <th>Student ID</th>
+                                    <th>Student Name</th>
+                                    <th>Check-in Time</th>
+                                    <th>Device / Kiosk</th>
+                                    <th>Status</th>
+                                    <th>Confidence</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for record in recent_records %}
+                                <tr>
+                                    <td class="mono font-semibold">
+                                        <span style="cursor: pointer;" onclick="copyText('{{ record.student.student_id }}', 'Student ID copied')" title="Click to copy Student ID">
+                                            {{ record.student.student_id }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <strong>{{ record.student.full_name }}</strong>
+                                        <small>{{ record.student.class_name|default:'Unassigned' }}</small>
+                                    </td>
+                                    <td class="mono">
+                                        {{ record.time_in|time:'H:i:s'|default:'—' }}
+                                        <small>{{ record.date|date:'M d, Y' }}</small>
+                                    </td>
+                                    <td>{{ record.camera_id|default:'Face Recognition Kiosk' }}</td>
+                                    <td>
+                                        {% if record.status == 'present' %}
+                                        <span class="status status-present"><span class="status-dot"></span> Present</span>
+                                        {% elif record.status == 'late' %}
+                                        <span class="status status-late"><span class="status-dot" style="background:#f59e0b;"></span> Late</span>
+                                        {% elif record.status == 'excused' %}
+                                        <span class="status status-excused"><i class="ph ph-check"></i> Excused</span>
+                                        {% else %}
+                                        <span class="status status-absent"><span class="status-dot" style="background:#ef4444;"></span> Absent</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="mono">
+                                        {% if record.confidence %}
+                                        <span style="color: var(--success); font-weight: 600;">{{ record.confidence|floatformat:1 }}%</span>
+                                        {% else %}
+                                        <span class="muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% empty %}
+                                <tr>
+                                    <td colspan="6" style="text-align: center; padding: 36px; color: var(--muted);">No attendance check-ins recorded yet today.</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- TAB 2: STUDENT DIRECTORY                                     -->
+            <!-- ============================================================ -->
+            <div id="tab-students" class="tab-pane is-hidden">
+                <section class="card students-panel" id="students">
+                    <div class="section-heading">
+                        <div>
+                            <span class="eyebrow">UNIVERSITY STUDENT DIRECTORY</span>
+                            <h2>Student Roster & Academic Profiles</h2>
+                        </div>
+                        <div class="filter-bar">
+                            <label class="search-field">
+                                <i class="ph ph-magnifying-glass"></i>
+                                <input id="studentSearch" type="search" placeholder="Search Student ID, name, email..." aria-label="Search students">
+                            </label>
+
+                            <select id="classFilter" class="filter-select" aria-label="Filter by class">
+                                <option value="">All Classes</option>
+                                {% for c in classrooms %}
+                                <option value="{{ c.name }}">{{ c.name }} ({{ c.class_id }})</option>
+                                {% endfor %}
+                            </select>
+
+                            <select id="faceFilter" class="filter-select" aria-label="Filter by Face ID">
+                                <option value="">All Face IDs</option>
+                                <option value="registered">Registered Face ID</option>
+                                <option value="unregistered">No Face ID</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table class="data-table" id="studentsTable">
+                            <caption class="sr-only">Student directory list</caption>
+                            <thead>
+                                <tr>
+                                    <th>Student ID</th>
+                                    <th>Full Name</th>
+                                    <th>Assigned Class</th>
+                                    <th>Face ID Status</th>
+                                    <th>Registration Date</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for s in students %}
+                                <tr id="student-row-{{ s.id }}">
+                                    <td class="mono font-semibold">
+                                        <span style="cursor: pointer;" onclick="copyText('{{ s.student_id }}', 'Student ID copied')">
+                                            {{ s.student_id }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <strong>{{ s.full_name }}</strong>
+                                        <small>{{ s.email|default:'No email registered' }}</small>
+                                    </td>
+                                    <td>
+                                        <span class="status" style="background: var(--bg); border: 1px solid var(--line);">
+                                            {{ s.class_name|default:'—' }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% if s.is_registered %}
+                                        <span class="status status-present"><span class="status-dot"></span> Face Registered</span>
+                                        {% else %}
+                                        <span class="status status-absent"><span class="status-dot" style="background: #ef4444;"></span> Unregistered</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="mono">{{ s.created_at|date:'M d, Y' }}</td>
+                                    <td>
+                                        <div style="display: flex; gap: 6px;">
+                                            <button class="button button-secondary button-sm" type="button" onclick="editStudent('{{ s.id }}', '{{ s.student_id }}', '{{ s.full_name|escapejs }}', '{{ s.class_name|default:''|escapejs }}', '{{ s.email|default:''|escapejs }}')">
+                                                <i class="ph ph-note-pencil"></i> Edit
+                                            </button>
+                                            <button class="button button-secondary button-sm" style="color: var(--danger); border-color: var(--danger-bg);" type="button" onclick="deleteStudent('{{ s.id }}', '{{ s.full_name|escapejs }}')">
+                                                <i class="ph ph-trash"></i> Delete
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% empty %}
+                                <tr>
+                                    <td colspan="6" style="text-align: center; padding: 36px; color: var(--muted);">No students registered in the database.</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- TAB 3: GRADE MANAGEMENT & AUDIT LOG                          -->
+            <!-- ============================================================ -->
+            <div id="tab-grades" class="tab-pane is-hidden">
+                <section class="card" id="grades-management">
+                    <div class="section-heading">
+                        <div>
+                            <span class="eyebrow">ACADEMIC EVALUATION & GRADING</span>
+                            <h2>Student Grades & Audit Log (GradeAuditLog)</h2>
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button class="button button-secondary button-sm" type="button" onclick="downloadGradeTemplate()">
+                                <i class="ph ph-file-arrow-down"></i> Download CSV Template
+                            </button>
+                            <button class="button button-primary button-sm" type="button" onclick="openBulkGradeModal()">
+                                <i class="ph ph-file-arrow-up"></i> Bulk Import CSV
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="filter-bar">
+                        <label class="search-field">
+                            <i class="ph ph-magnifying-glass"></i>
+                            <input id="gradeSearch" type="search" placeholder="Search by Student ID or name..." aria-label="Search grades">
+                        </label>
+
+                        <select id="gradeSubjectFilter" class="filter-select">
+                            <option value="">All Courses</option>
+                            {% for sub in subjects %}
+                            <option value="{{ sub.id }}">{{ sub.code }} - {{ sub.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Grade Audit Log Timeline -->
+                    <div style="margin-top: 24px;">
+                        <h3 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                            <i class="ph ph-clock-counter-clockwise" style="color: var(--accent);"></i>
+                            Recent Grade Adjustments (GradeAuditLog)
+                        </h3>
+                        <div class="audit-timeline">
+                            {% for audit in recent_audits %}
+                            <div class="audit-card">
+                                <div>
+                                    <div class="audit-student">{{ audit.grade.student.full_name }} ({{ audit.grade.student.student_id }})</div>
+                                    <div class="muted" style="font-size: 12px;">Course: {{ audit.grade.subject.name }} · Assessment: {{ audit.assessment_type }}</div>
+                                    <div class="audit-reason">Reason: {{ audit.reason|default:'No reason specified' }}</div>
+                                </div>
+                                <div style="display: grid; justify-items: end; gap: 4px;">
+                                    <span class="audit-delta">{{ audit.old_score|floatformat:2 }} → {{ audit.new_score|floatformat:2 }}</span>
+                                    <span class="audit-meta">{{ audit.changed_by.username|default:'Admin' }} · {{ audit.changed_at|date:'H:i M d, Y' }}</span>
+                                </div>
+                            </div>
+                            {% empty %}
+                            <div style="padding: 20px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px;">
+                                No grade adjustments recorded in the audit log yet.
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- TAB 4: CLASSES & SESSIONS (FULLY INTEGRATED)                 -->
+            <!-- ============================================================ -->
+            <div id="tab-schedule" class="tab-pane is-hidden">
+                <!-- Active Sessions in Progress -->
+                {% if active_sessions %}
+                <section class="active-sessions-banner">
+                    <div class="section-heading" style="margin-bottom: 12px;">
+                        <div>
+                            <span class="eyebrow" style="color: var(--accent);">IN PROGRESS</span>
+                            <h2>Active Attendance Sessions</h2>
+                        </div>
+                        <span class="status status-present"><span class="status-dot"></span> Live</span>
+                    </div>
+                    <div class="session-grid">
+                        {% for session in active_sessions %}
+                        <div class="session-card">
+                            <div>
+                                <span class="session-code">SESSION #{{ session.id }}</span>
+                                <h3>{{ session.schedule.subject.name }}</h3>
+                                <p>{{ session.schedule.classroom.class_id }} · {{ session.schedule.classroom.name }}</p>
+                            </div>
+                            <div class="session-meta">
+                                <span>{{ session.schedule.get_time_range }}</span>
+                                <strong>{{ session.get_present_count }}/{{ session.get_total_students }} present</strong>
+                            </div>
+                            <div style="display: flex; gap: 8px; margin-top: 12px;">
+                                <a class="button button-sm primary full-width" href="{% url 'portal:attendance_session' session.id %}">
+                                    <i class="ph ph-camera"></i> Open Session
+                                </a>
+                                <button class="button button-sm secondary" type="button" onclick="postponeSession(event, {{ session.id }})" title="Postpone session">
+                                    Postpone
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </section>
+                {% endif %}
+
+                <!-- Action Bar for Classes, Subjects & Schedules -->
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
+                    <div>
+                        <h2>Academic Plan & Weekly Timetable</h2>
+                        <p class="muted">Manage courses, classes, room assignments, and automatic attendance sessions.</p>
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="button button-secondary button-sm" type="button" onclick="openSubjectModal()">
+                            <i class="ph ph-plus"></i> Add Course
+                        </button>
+                        <button class="button button-secondary button-sm" type="button" onclick="openClassModal()">
+                            <i class="ph ph-plus"></i> Add Class
+                        </button>
+                        <button class="button button-primary button-sm" type="button" onclick="openScheduleModal()">
+                            <i class="ph ph-calendar-plus"></i> Assign Schedule
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Weekly Schedule Viewer with Day Selector -->
+                <section class="card">
+                    <div class="section-heading">
+                        <div>
+                            <span class="eyebrow">BY DAY OF WEEK</span>
+                            <h2>Weekly Teaching Timetable</h2>
+                        </div>
+                    </div>
+
+                    <div class="day-tabs">
+                        {% for day_num, day_data in schedule_by_day.items %}
+                        <a class="day-tab {% if day_num == current_day %}is-current{% endif %}" href="#day-{{ day_num }}">
+                            <span>{{ day_data.name_en }}</span>
+                            <strong>{{ day_data.schedules|length }}</strong>
+                        </a>
+                        {% endfor %}
+                    </div>
+
+                    <div class="week-list">
+                        {% for day_num, day_data in schedule_by_day.items %}
+                        <section class="day-section" id="day-{{ day_num }}">
+                            <div class="day-heading">
+                                <span>{{ day_data.name_en }}</span>
+                                {% if day_num == current_day %}
+                                <em>Today</em>
+                                {% endif %}
+                            </div>
+
+                            {% for sch in day_data.schedules %}
+                            <article class="schedule-row">
+                                <div class="schedule-time">
+                                    {{ sch.get_time_range }}
+                                    <small>Room: {{ sch.room|default:'Unassigned' }}</small>
+                                </div>
+                                <div class="schedule-info">
+                                    <strong>{{ sch.subject.name }}</strong>
+                                    <span>Code: {{ sch.subject.code }} · Class: {{ sch.classroom.class_id }} ({{ sch.classroom.name }})</span>
+                                    <small>Lecturer: {{ sch.subject.teacher|default:'TBA' }}</small>
+                                </div>
+                                <div class="schedule-action">
+                                    {% for s in today_sessions %}
+                                    {% if s.schedule_id == sch.id %}
+                                    <a class="button button-primary button-sm" href="{% url 'portal:attendance_session' s.id %}">
+                                        <i class="ph ph-check-square"></i> Open Attendance
+                                    </a>
+                                    {% endif %}
+                                    {% endfor %}
+                                </div>
+                            </article>
+                            {% empty %}
+                            <div style="padding: 16px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; margin-bottom: 12px;">
+                                No classes scheduled on this day.
+                            </div>
+                            {% endfor %}
+                        </section>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <!-- Class & Subject Directory Tables -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; margin-top: 24px;">
+                    <!-- Classes Directory -->
+                    <section class="card" id="class-directory">
+                        <div class="section-heading">
+                            <div>
+                                <span class="eyebrow">CLASS DIRECTORY</span>
+                                <h2>Classes Roster</h2>
+                            </div>
+                            <span class="status status-active">{{ classrooms|length }} classes</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Class ID</th>
+                                        <th>Class Name</th>
+                                        <th>Department</th>
+                                        <th>Students</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for cl in classrooms %}
+                                    <tr>
+                                        <td class="mono font-semibold">{{ cl.class_id }}</td>
+                                        <td><strong>{{ cl.name }}</strong></td>
+                                        <td>{{ cl.department|default:'—' }}</td>
+                                        <td class="mono font-semibold">{{ cl.students.count }}</td>
+                                    </tr>
+                                    {% empty %}
+                                    <tr>
+                                        <td colspan="4" style="text-align: center; padding: 24px; color: var(--muted);">No classes registered yet.</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <!-- Subjects Directory -->
+                    <section class="card" id="subject-directory">
+                        <div class="section-heading">
+                            <div>
+                                <span class="eyebrow">COURSE DIRECTORY</span>
+                                <h2>Courses & Subjects</h2>
+                            </div>
+                            <span class="status status-active">{{ subjects|length }} courses</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Course Code</th>
+                                        <th>Course Name</th>
+                                        <th>Lecturer</th>
+                                        <th>Credits</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for sb in subjects %}
+                                    <tr>
+                                        <td class="mono font-semibold">{{ sb.code }}</td>
+                                        <td><strong>{{ sb.name }}</strong></td>
+                                        <td>{{ sb.teacher|default:'—' }}</td>
+                                        <td class="mono font-semibold">{{ sb.credits }}</td>
+                                    </tr>
+                                    {% empty %}
+                                    <tr>
+                                        <td colspan="4" style="text-align: center; padding: 24px; color: var(--muted);">No courses registered yet.</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- TAB 5: FACE REGISTRATION                                     -->
+            <!-- ============================================================ -->
+            <div id="tab-face-reg" class="tab-pane is-hidden">
+                <section class="card face-registration-panel" id="face-registration">
+                    <div class="section-heading">
+                        <div>
+                            <span class="eyebrow">AI VISION RECOGNITION</span>
+                            <h2>Register Student Face Profiles (InsightFace Engine)</h2>
+                            <p class="muted">Supports live camera capture or portrait photo uploads to generate 512-D face embeddings.</p>
+                        </div>
+                        <div class="status status-present">
+                            <span class="status-dot"></span>
+                            <span>Registered: <strong>{{ registered_students }}</strong> faces</span>
+                        </div>
+                    </div>
+
+                    {% include 'portal/face_registration_panel.html' %}
+                </section>
+            </div>
+        </main>
+    </div>
+</div>
+
+<!-- ========================================================================== -->
+<!-- MODALS                                                                     -->
+<!-- ========================================================================== -->
+
+<!-- Modal: Add Class -->
+<div id="classModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="classModalTitle">
+    <div class="modal-card">
+        <div class="section-heading" style="margin-bottom: 12px;">
+            <h2 id="classModalTitle">Add New Class</h2>
+            <button class="icon-button" type="button" onclick="closeClassModal()" aria-label="Close">×</button>
+        </div>
+        <form id="classForm" onsubmit="createClass(event)">
+            <label>
+                Class ID
+                <input id="newClassId" required placeholder="CN22A">
+            </label>
+            <label>
+                Class Name
+                <input id="newClassName" required placeholder="Computer Science 22A">
+            </label>
+            <label>
+                Department / Faculty
+                <input id="newDepartment" placeholder="Faculty of Information Technology">
+            </label>
+            <div class="modal-actions">
+                <button class="button button-secondary" type="button" onclick="closeClassModal()">Cancel</button>
+                <button class="button button-primary" type="submit">Save Class</button>
+            </div>
+            <p id="classFormMessage" class="footnote" style="margin-top: 10px;"></p>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Add Course -->
+<div id="subjectModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="subjectModalTitle">
+    <div class="modal-card">
+        <div class="section-heading" style="margin-bottom: 12px;">
+            <h2 id="subjectModalTitle">Add New Course</h2>
+            <button class="icon-button" type="button" onclick="closeSubjectModal()" aria-label="Close">×</button>
+        </div>
+        <form id="subjectForm" onsubmit="createSubject(event)">
+            <label>
+                Course Code
+                <input id="newSubjectCode" required placeholder="IT101">
+            </label>
+            <label>
+                Course Name
+                <input id="newSubjectName" required placeholder="Advanced Python Programming">
+            </label>
+            <label>
+                Lecturer
+                <input id="newSubjectTeacher" placeholder="Dr. John Doe">
+            </label>
+            <label>
+                Credits
+                <input id="newSubjectCredits" type="number" min="1" max="20" value="3" required>
+            </label>
+            <div class="modal-actions">
+                <button class="button button-secondary" type="button" onclick="closeSubjectModal()">Cancel</button>
+                <button class="button button-primary" type="submit">Save Course</button>
+            </div>
+            <p id="subjectFormMessage" class="footnote" style="margin-top: 10px;"></p>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Assign Schedule -->
+<div id="scheduleModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
+    <div class="modal-card">
+        <div class="section-heading" style="margin-bottom: 12px;">
+            <h2 id="scheduleModalTitle">Assign Course Schedule</h2>
+            <button class="icon-button" type="button" onclick="closeScheduleModal()" aria-label="Close">×</button>
+        </div>
+        <form id="scheduleForm" onsubmit="createSchedule(event)">
+            <label>
+                Course
+                <select id="scheduleSubject" required>
+                    <option value="">-- Select Course --</option>
+                    {% for s in subjects %}
+                    <option value="{{ s.id }}">{{ s.code }} · {{ s.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Class
+                <select id="scheduleClass" required>
+                    <option value="">-- Select Class --</option>
+                    {% for c in classrooms %}
+                    <option value="{{ c.id }}">{{ c.class_id }} · {{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div class="form-grid">
+                <label>
+                    Semester / Academic Term
+                    <select id="scheduleSemester">
+                        <option value="">Unassigned</option>
+                        {% for term in semesters %}
+                        <option value="{{ term.id }}">{{ term.name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Day of Week
+                    <select id="scheduleDay" required>
+                        <option value="0">Monday</option>
+                        <option value="1">Tuesday</option>
+                        <option value="2">Wednesday</option>
+                        <option value="3">Thursday</option>
+                        <option value="4">Friday</option>
+                        <option value="5">Saturday</option>
+                        <option value="6">Sunday</option>
+                    </select>
+                </label>
+                <label>
+                    Room
+                    <input id="scheduleRoom" placeholder="A203">
+                </label>
+                <label>
+                    Start Period
+                    <select id="scheduleStart" required>
+                        {% for period in '123456789'|make_list %}
+                        <option value="{{ period }}">Period {{ period }}</option>
+                        {% endfor %}
+                        <option value="10">Period 10</option>
+                    </select>
+                </label>
+                <label>
+                    End Period
+                    <select id="scheduleEnd" required>
+                        {% for period in '123456789'|make_list %}
+                        <option value="{{ period }}">Period {{ period }}</option>
+                        {% endfor %}
+                        <option value="10">Period 10</option>
+                    </select>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button class="button button-secondary" type="button" onclick="closeScheduleModal()">Cancel</button>
+                <button class="button button-primary" type="submit">Save Schedule</button>
+            </div>
+            <p id="scheduleFormMessage" class="footnote" style="margin-top: 10px;"></p>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Bulk CSV Grade Import -->
+<div id="bulkGradeModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bulkGradeModalTitle">
+    <div class="modal-card">
+        <div class="section-heading" style="margin-bottom: 12px;">
+            <h2 id="bulkGradeModalTitle">Bulk Import Grades (CSV)</h2>
+            <button class="icon-button" type="button" onclick="closeBulkGradeModal()" aria-label="Close">×</button>
+        </div>
+        <p class="muted" style="font-size: 13px; margin-bottom: 16px;">
+            CSV file requires columns: <code>student_id, subject_id, semester, regular_score, midterm_score, final_score, bonus_score</code>.
+        </p>
+        <form onsubmit="submitBulkGrade(event)">
+            <label>
+                Select CSV File
+                <input id="bulkGradeFile" type="file" accept=".csv" required style="padding: 12px; border: 1px dashed var(--line); border-radius: 9px; cursor: pointer;">
+            </label>
+            <div id="bulkGradeResult" class="hidden" style="margin-top: 10px; font-size: 13px;"></div>
+            <div class="modal-actions">
+                <button class="button button-secondary" type="button" onclick="closeBulkGradeModal()">Close</button>
+                <button class="button button-primary" id="btnSubmitBulk" type="submit">Upload & Import Grades</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Update Student Profile -->
+<div id="editStudentModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editStudentModalTitle">
+    <div class="modal-card">
+        <div class="section-heading" style="margin-bottom: 12px;">
+            <h2 id="editStudentModalTitle">Update Student Profile</h2>
+            <button class="icon-button" type="button" onclick="closeEditModal()" aria-label="Close">×</button>
+        </div>
+        <form onsubmit="saveStudentEdit(event)">
+            <input type="hidden" id="editStudentId">
+            <label>
+                Student ID
+                <input id="editStudentCode" required>
+            </label>
+            <label>
+                Full Name
+                <input id="editFullName" required>
+            </label>
+            <label>
+                Assigned Class
+                <input id="editClassName">
+            </label>
+            <label>
+                Email Address
+                <input id="editEmail" type="email">
+            </label>
+            <div class="modal-actions">
+                <button class="button button-secondary" type="button" onclick="closeEditModal()">Cancel</button>
+                <button class="button button-primary" type="submit">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
 {% endblock %}
-{% block extra_js %}<script>updateTime();setInterval(updateTime,1000);const modal=document.getElementById('editModal');function openEditModal(id,code,name,cls,email){document.getElementById('editStudentId').value=id;document.getElementById('editStudentCode').value=code;document.getElementById('editFullName').value=name;document.getElementById('editClassName').value=cls;document.getElementById('editEmail').value=email;modal.classList.remove('hidden');document.getElementById('editFullName').focus()}function closeEditModal(){modal.classList.add('hidden')}modal.addEventListener('click',e=>{if(e.target===modal)closeEditModal()});document.addEventListener('keydown',e=>{if(e.key==='Escape')closeEditModal()});document.getElementById('studentSearch').addEventListener('input',e=>{const q=e.target.value.toLowerCase().trim();document.querySelectorAll('#studentsTable tbody tr').forEach(row=>row.hidden=q&&!row.textContent.toLowerCase().includes(q))});async function saveStudent(e){e.preventDefault();const id=document.getElementById('editStudentId').value;const r=await fetch(`/api/update-student/${id}/`,{method:'PUT',headers:{'Content-Type':'application/json','X-CSRFToken':getCsrfToken()},body:JSON.stringify({student_id:document.getElementById('editStudentCode').value,full_name:document.getElementById('editFullName').value,class_name:document.getElementById('editClassName').value,email:document.getElementById('editEmail').value})});const d=await r.json();if(d.success)location.reload();else showToast(d.error||'Could not save changes','error')}async function deleteStudent(id,name){if(!confirm(`Delete student “${name}”?`))return;const r=await fetch(`/api/delete-student/${id}/`,{method:'DELETE',headers:{'X-CSRFToken':getCsrfToken()}});const d=await r.json();if(d.success)document.getElementById(`student-row-${id}`)?.remove();else showToast(d.error||'Could not delete student','error')}</script>{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Live Clock Runner
+    function updateClock() {
+        const c = document.getElementById('dashClock');
+        if (c) {
+            const now = new Date();
+            c.textContent = now.toLocaleTimeString('en-US', { hour12: false });
+        }
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Copy to Clipboard Utility
+    function copyText(text, msg) {
+        navigator.clipboard.writeText(text).then(() => {
+            showToast(msg || 'Copied to clipboard', 'success');
+        });
+    }
+
+    // Modal Generic Controls
+    function showModal(id) { document.getElementById(id)?.classList.remove('hidden'); }
+    function hideModal(id) { document.getElementById(id)?.classList.add('hidden'); }
+
+    function openClassModal() { showModal('classModal'); document.getElementById('newClassId')?.focus(); }
+    function closeClassModal() { hideModal('classModal'); }
+
+    function openSubjectModal() { showModal('subjectModal'); document.getElementById('newSubjectCode')?.focus(); }
+    function closeSubjectModal() { hideModal('subjectModal'); }
+
+    function openScheduleModal() { showModal('scheduleModal'); document.getElementById('scheduleSubject')?.focus(); }
+    function closeScheduleModal() { hideModal('scheduleModal'); }
+
+    function openBulkGradeModal() {
+        document.getElementById('bulkGradeFile').value = '';
+        document.getElementById('bulkGradeResult').classList.add('hidden');
+        showModal('bulkGradeModal');
+    }
+    function closeBulkGradeModal() { hideModal('bulkGradeModal'); }
+
+    ['classModal', 'subjectModal', 'scheduleModal', 'bulkGradeModal', 'editStudentModal'].forEach(id => {
+        document.getElementById(id)?.addEventListener('click', e => {
+            if (e.target.id === id) hideModal(id);
+        });
+    });
+
+    // Tab Management & Breadcrumb Sync
+    const tabTitles = {
+        'tab-live': 'Overview & Live',
+        'tab-students': 'Students Directory',
+        'tab-grades': 'Grades & Audit Log',
+        'tab-schedule': 'Classes & Sessions',
+        'tab-face-reg': 'Face Registration'
+    };
+
+    function switchTab(tabId) {
+        // Update tab buttons
+        document.querySelectorAll('.dash-tab-btn').forEach(b => {
+            b.classList.toggle('is-active', b.getAttribute('data-tab') === tabId);
+        });
+        // Update sidebar links
+        document.querySelectorAll('.dash-nav-link').forEach(l => {
+            l.classList.toggle('is-active', l.getAttribute('data-tab') === tabId);
+        });
+        // Update tab panes
+        document.querySelectorAll('.tab-pane').forEach(p => {
+            p.classList.toggle('is-hidden', p.id !== tabId);
+        });
+        // Update breadcrumb & heading
+        const label = tabTitles[tabId] || 'Overview & Live';
+        const pageLabel = document.getElementById('pageLabel');
+        if (pageLabel) pageLabel.textContent = label;
+        const headingTitle = document.getElementById('pageHeadingTitle');
+        if (headingTitle) headingTitle.textContent = label;
+
+        // Update URL hash smoothly without page jump
+        const cleanHash = tabId.replace('tab-', '');
+        history.replaceState(null, '', '#' + cleanHash);
+    }
+
+    // Attach click listeners to all tab buttons and sidebar links
+    document.querySelectorAll('.dash-tab-btn, .dash-nav-link').forEach(el => {
+        el.addEventListener('click', () => {
+            const tab = el.getAttribute('data-tab');
+            if (tab) switchTab(tab);
+        });
+    });
+
+    // Hash router on page load
+    window.addEventListener('DOMContentLoaded', () => {
+        const hash = window.location.hash.replace('#', '');
+        if (hash === 'schedule' || hash === 'classes') {
+            switchTab('tab-schedule');
+        } else if (hash === 'students') {
+            switchTab('tab-students');
+        } else if (hash === 'grades') {
+            switchTab('tab-grades');
+        } else if (hash === 'face-reg' || hash === 'face-registration') {
+            switchTab('tab-face-reg');
+        } else {
+            switchTab('tab-live');
+        }
+    });
+
+    window.addEventListener('hashchange', () => {
+        const hash = window.location.hash.replace('#', '');
+        if (hash === 'schedule') switchTab('tab-schedule');
+        else if (hash === 'students') switchTab('tab-students');
+        else if (hash === 'grades') switchTab('tab-grades');
+        else if (hash === 'face-reg' || hash === 'face-registration') switchTab('tab-face-reg');
+        else switchTab('tab-live');
+    });
+
+    // Helper CSRF
+    function getCsrfToken() {
+        const match = document.cookie.match(/csrftoken=([^;]+)/);
+        return match ? match[1] : '';
+    }
+
+    // Async Create Class
+    async function createClass(event) {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const msg = document.getElementById('classFormMessage');
+        const payload = {
+            class_id: document.getElementById('newClassId').value.trim(),
+            name: document.getElementById('newClassName').value.trim(),
+            department: document.getElementById('newDepartment').value.trim()
+        };
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        submit.textContent = 'Saving...';
+        try {
+            const res = await fetch('/api/classes/create/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                msg.textContent = data.error || 'Failed to save class';
+                msg.style.color = 'var(--danger)';
+                return;
+            }
+            showToast('Class saved successfully!', 'success');
+            setTimeout(() => location.reload(), 700);
+        } catch (e) {
+            msg.textContent = 'Server connection error';
+            msg.style.color = 'var(--danger)';
+        } finally {
+            submit.disabled = false;
+            submit.textContent = 'Save Class';
+        }
+    }
+
+    // Async Create Subject
+    async function createSubject(event) {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const msg = document.getElementById('subjectFormMessage');
+        const payload = {
+            code: document.getElementById('newSubjectCode').value.trim(),
+            name: document.getElementById('newSubjectName').value.trim(),
+            teacher: document.getElementById('newSubjectTeacher').value.trim(),
+            credits: document.getElementById('newSubjectCredits').value
+        };
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        submit.textContent = 'Saving...';
+        try {
+            const res = await fetch('/api/subjects/create/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                msg.textContent = data.error || 'Failed to save course';
+                msg.style.color = 'var(--danger)';
+                return;
+            }
+            showToast('Course saved successfully!', 'success');
+            setTimeout(() => location.reload(), 700);
+        } catch (e) {
+            msg.textContent = 'Server connection error';
+            msg.style.color = 'var(--danger)';
+        } finally {
+            submit.disabled = false;
+            submit.textContent = 'Save Course';
+        }
+    }
+
+    // Async Create Schedule
+    async function createSchedule(event) {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const msg = document.getElementById('scheduleFormMessage');
+        const payload = {
+            semester_id: document.getElementById('scheduleSemester').value,
+            subject_id: document.getElementById('scheduleSubject').value,
+            classroom_id: document.getElementById('scheduleClass').value,
+            day_of_week: document.getElementById('scheduleDay').value,
+            start_period: document.getElementById('scheduleStart').value,
+            end_period: document.getElementById('scheduleEnd').value,
+            room: document.getElementById('scheduleRoom').value.trim()
+        };
+        const submit = form.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        submit.textContent = 'Saving...';
+        try {
+            const res = await fetch('/api/schedules/create/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                msg.textContent = data.error || 'Failed to save schedule';
+                msg.style.color = 'var(--danger)';
+                return;
+            }
+            showToast('Schedule assigned successfully!', 'success');
+            setTimeout(() => location.reload(), 700);
+        } catch (e) {
+            msg.textContent = 'Server connection error';
+            msg.style.color = 'var(--danger)';
+        } finally {
+            submit.disabled = false;
+            submit.textContent = 'Save Schedule';
+        }
+    }
+
+    // Postpone Session
+    async function postponeSession(event, sessionId) {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        const postponedTo = window.prompt('New date for session (YYYY-MM-DD), leave blank if unset:', '');
+        if (postponedTo === null) return;
+        const reason = window.prompt('Reason for postponement:', '');
+        try {
+            const res = await fetch('/api/session/' + sessionId + '/postpone/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+                body: JSON.stringify({ postponed_to: postponedTo, reason: reason || '' })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                showToast(data.error || 'Failed to postpone session', 'error');
+                return;
+            }
+            showToast('Session postponed successfully', 'success');
+            setTimeout(() => location.reload(), 800);
+        } catch (e) {
+            showToast('Server connection error', 'error');
+        }
+    }
+
+    // Download Grade Template CSV
+    function downloadGradeTemplate() {
+        const sub = prompt('Enter course code to download template (leave blank for all courses):', '');
+        const sem = '2026-1';
+        let url = `/api/admin/grades/template.csv?semester=${encodeURIComponent(sem)}`;
+        if (sub && sub.trim()) url += `&subject_code=${encodeURIComponent(sub.trim())}`;
+        window.location.href = url;
+    }
+
+    // Bulk Grade Upload
+    async function submitBulkGrade(e) {
+        e.preventDefault();
+        const fileInput = document.getElementById('bulkGradeFile');
+        if (!fileInput.files || !fileInput.files[0]) {
+            showToast('Please select a CSV file', 'warning');
+            return;
+        }
+        const btn = document.getElementById('btnSubmitBulk');
+        btn.disabled = true;
+        btn.textContent = 'Uploading...';
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        try {
+            const r = await fetch('/api/admin/grades/import.csv', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCsrfToken() },
+                body: formData
+            });
+            const d = await r.json();
+            const resDiv = document.getElementById('bulkGradeResult');
+            resDiv.classList.remove('hidden');
+            if (d.success) {
+                resDiv.innerHTML = `<span style="color: var(--success); font-weight: 600;">${d.message}</span>`;
+                showToast(d.message, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                resDiv.innerHTML = `<span style="color: var(--danger); font-weight: 600;">${d.error || 'Failed'}</span>`;
+                showToast(d.error || 'An error occurred', 'error');
+            }
+        } catch (err) {
+            showToast('Network error while uploading CSV file', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Upload & Import Grades';
+        }
+    }
+
+    // Student Edit & Delete
+    function editStudent(id, code, name, className, email) {
+        document.getElementById('editStudentId').value = id;
+        document.getElementById('editStudentCode').value = code;
+        document.getElementById('editFullName').value = name;
+        document.getElementById('editClassName').value = className;
+        document.getElementById('editEmail').value = email;
+        showModal('editStudentModal');
+    }
+    function closeEditModal() { hideModal('editStudentModal'); }
+
+    async function saveStudentEdit(e) {
+        e.preventDefault();
+        const id = document.getElementById('editStudentId').value;
+        try {
+            const r = await fetch(`/api/update-student/${id}/`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+                body: JSON.stringify({
+                    student_id: document.getElementById('editStudentCode').value,
+                    full_name: document.getElementById('editFullName').value,
+                    class_name: document.getElementById('editClassName').value,
+                    email: document.getElementById('editEmail').value
+                })
+            });
+            const d = await r.json();
+            if (d.success) {
+                showToast('Student profile updated successfully!', 'success');
+                setTimeout(() => location.reload(), 700);
+            } else {
+                showToast(d.error || 'Failed to update profile', 'error');
+            }
+        } catch (err) {
+            showToast('Network error during update', 'error');
+        }
+    }
+
+    async function deleteStudent(id, name) {
+        if (!confirm(`Are you sure you want to delete student “${name}”?`)) return;
+        try {
+            const r = await fetch(`/api/delete-student/${id}/`, {
+                method: 'DELETE',
+                headers: { 'X-CSRFToken': getCsrfToken() }
+            });
+            const d = await r.json();
+            if (d.success) {
+                document.getElementById(`student-row-${id}`)?.remove();
+                showToast(`Deleted student ${name}`, 'info');
+            } else {
+                showToast(d.error || 'Could not delete student', 'error');
+            }
+        } catch (err) {
+            showToast('Error sending delete request', 'error');
+        }
+    }
+
+    // Review Leave Request
+    async function reviewLeave(leaveId, action) {
+        const actionText = action === 'approve' ? 'approve' : 'reject';
+        const note = prompt(`Enter optional review note for student when ${actionText}ing application:`, '');
+        if (note === null) return;
+        try {
+            const r = await fetch(`/api/admin/leave-requests/${leaveId}/review/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+                body: JSON.stringify({ action: action, note: note })
+            });
+            const d = await r.json();
+            if (d.success) {
+                showToast(d.message, 'success');
+                document.getElementById(`leave-row-${leaveId}`)?.remove();
+            } else {
+                showToast(d.error || 'Could not process leave application', 'error');
+            }
+        } catch (err) {
+            showToast('Server connection error', 'error');
+        }
+    }
+
+    // Client-side search filters
+    document.getElementById('liveSearch')?.addEventListener('input', function(e) {
+        const q = e.target.value.toLowerCase().trim();
+        document.querySelectorAll('#liveTable tbody tr').forEach(row => {
+            row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+    });
+
+    document.getElementById('studentSearch')?.addEventListener('input', function(e) {
+        const q = e.target.value.toLowerCase().trim();
+        document.querySelectorAll('#studentsTable tbody tr').forEach(row => {
+            row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+    });
+
+    document.getElementById('classFilter')?.addEventListener('change', function(e) {
+        const val = e.target.value.toLowerCase().trim();
+        document.querySelectorAll('#studentsTable tbody tr').forEach(row => {
+            row.style.display = (!val || row.textContent.toLowerCase().includes(val)) ? '' : 'none';
+        });
+    });
+
+    // Responsive Mobile Drawer Navigation
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebarEl = document.querySelector('.app-sidebar');
+    const sidebarBackdropEl = document.getElementById('sidebarBackdrop');
+
+    function toggleMobileMenu() {
+        if (!sidebarEl) return;
+        const isOpen = sidebarEl.classList.toggle('mobile-open');
+        if (sidebarBackdropEl) sidebarBackdropEl.classList.toggle('is-active', isOpen);
+        document.body.style.overflow = isOpen ? 'hidden' : '';
+    }
+
+    function closeMobileMenu() {
+        if (sidebarEl) sidebarEl.classList.remove('mobile-open');
+        if (sidebarBackdropEl) sidebarBackdropEl.classList.remove('is-active');
+        document.body.style.overflow = '';
+    }
+
+    if (mobileMenuBtn) {
+        mobileMenuBtn.addEventListener('click', toggleMobileMenu);
+    }
+    if (sidebarBackdropEl) {
+        sidebarBackdropEl.addEventListener('click', closeMobileMenu);
+    }
+    document.querySelectorAll('.app-sidebar .dash-nav-link').forEach(link => {
+        link.addEventListener('click', () => {
+            if (window.innerWidth <= 900) closeMobileMenu();
+        });
+    });
+</script>
+{% endblock %}

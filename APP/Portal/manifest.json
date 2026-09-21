@@ -1,0 +1,22 @@
+{
+  "name": "Student Portal · UTH",
+  "short_name": "UTH Portal",
+  "description": "UTH Student Portal — track schedule, attendance, grades, and course registration.",
+  "start_url": "/student-portal/",
+  "display": "standalone",
+  "background_color": "#f5f7f8",
+  "theme_color": "#104c45",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "assets/uth-logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/uth-logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

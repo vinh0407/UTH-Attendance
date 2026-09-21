@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import csv
 import re
+import os
+import tempfile
 from pathlib import Path
 
 from django.conf import settings
@@ -84,3 +86,24 @@ def archive_attendance_record(record):
             writer.writeheader()
         writer.writerow(row)
     return target
+
+
+def rebuild_attendance_archive(record):
+    """Rebuild the affected CSV from committed data after a staff correction."""
+    from .models import AttendanceRecord
+    folder = _safe_folder(record.session.schedule.subject.name if record.session_id else 'Unknown')
+    directory = Path(settings.ATTENDANCE_HISTORY_DIR) / record.date.strftime('%d_%m_%Y') / folder
+    directory.mkdir(parents=True, exist_ok=True)
+    records = AttendanceRecord.objects.filter(date=record.date).select_related('student', 'session__schedule__subject').order_by('pk')
+    rows = [row_for_record(item) for item in records if _safe_folder(
+        item.session.schedule.subject.name if item.session_id else 'Unknown') == folder]
+    descriptor, temporary = tempfile.mkstemp(prefix='.attendance-', suffix='.csv', dir=directory)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8-sig', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=ARCHIVE_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary, directory / 'attendance.csv')
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

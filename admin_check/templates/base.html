@@ -1,37 +1,48 @@
 {% load static %}
 <!DOCTYPE html>
-<html class="dark" lang="en">
+<html lang="en" translate="no" class="notranslate {% block html_class %}{% endblock %}" data-theme="{% block html_theme %}light{% endblock %}">
 <head>
     <meta charset="utf-8" />
+    <meta name="google" content="notranslate">
     <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport" />
-    <title>{% block title %}UTH Attendance{% endblock %}</title>
+    <title>{% block title %}UTH Attendance & Operations{% endblock %}</title>
     <link rel="icon" type="image/png" href="{% static 'img/uth-logo.png' %}">
     
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <!-- Phosphor Icons (Local & CDN Fallback) -->
+    <link rel="stylesheet" href="{% static 'icons/phosphor/style.css' %}">
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
     
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- Google Fonts & Material Symbols -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
     
-    <!-- Tailwind Config -->
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
             darkMode: "class",
             theme: {
                 extend: {
                     colors: {
-                        "primary": "#2b6cee",
-                        "primary-glow": "#4d8aff",
-                        "background-light": "#f6f6f8",
-                        "background-dark": "#0b0e14",
-                        "glass-border": "rgba(255, 255, 255, 0.1)",
-                        "glass-surface": "rgba(255, 255, 255, 0.03)",
-                        "success": "#22c55e",
+                        "primary": "#104c45",
+                        "primary-hover": "#177665",
+                        "primary-glow": "#10b981",
+                        "primary-light": "#e8f3ed",
+                        "uth-teal": "#177665",
+                        "uth-dark": "#104c45",
+                        "uth-sky": "#0284c7",
+                        "uth-navy": "#0f2c42",
+                        "background-light": "#f5f7f8",
+                        "background-dark": "#0e1a17",
+                        "surface-dark": "#142622",
+                        "glass-border": "rgba(255, 255, 255, 0.12)",
+                        "glass-surface": "rgba(255, 255, 255, 0.05)",
+                        "success": "#10b981",
                         "warning": "#f59e0b",
+                        "danger": "#ef4444",
                     },
                     fontFamily: {
-                        "display": ["Space Grotesk", "sans-serif"]
+                        "display": ["Plus Jakarta Sans", "Space Grotesk", "sans-serif"]
                     },
                     borderRadius: {
                         "DEFAULT": "0.5rem",
@@ -83,7 +94,7 @@
     {% block extra_css %}{% endblock %}
 </head>
 
-<body class="bg-background-dark text-white font-display relative min-h-screen flex flex-col selection:bg-primary selection:text-white overflow-x-hidden">
+<body class="{% block body_class %}bg-[#f5f7f8] text-[#203530]{% endblock %} relative min-h-screen flex flex-col selection:bg-[#177665] selection:text-white overflow-x-hidden">
     
     {% block content %}{% endblock %}
     

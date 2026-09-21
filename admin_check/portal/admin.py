@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Student, AttendanceRecord, Camera, SystemStats, Subject, ClassRoom, Schedule, AttendanceSession, Grade
+from .models import Student, AttendanceRecord, Camera, SystemStats, Subject, ClassRoom, Schedule, AttendanceSession, Grade, AcademicTerm
 
 # Replace Django's default admin branding with the product identity.
 admin.site.site_header = 'UTH Attendance Administration'
@@ -79,10 +79,16 @@ class ClassRoomAdmin(admin.ModelAdmin):
 # Quản lý Thời khóa biểu
 # =====================================================
 
+@admin.register(AcademicTerm)
+class AcademicTermAdmin(admin.ModelAdmin):
+    list_display = ['code', 'name', 'starts_on', 'ends_on']
+    search_fields = ['code', 'name']
+
+
 @admin.register(Schedule)
 class ScheduleAdmin(admin.ModelAdmin):
-    list_display = ['subject', 'classroom', 'get_day_name', 'start_period', 'end_period', 'room', 'is_active']
-    list_filter = ['day_of_week', 'is_active', 'classroom']
+    list_display = ['subject', 'classroom', 'semester', 'get_day_name', 'start_period', 'end_period', 'room', 'is_active']
+    list_filter = ['semester', 'day_of_week', 'is_active', 'classroom']
     search_fields = ['subject__name', 'subject__code', 'classroom__name', 'room']
     ordering = ['day_of_week', 'start_period']
     list_editable = ['is_active']
@@ -122,3 +128,37 @@ class AttendanceSessionAdmin(admin.ModelAdmin):
     def get_total_students(self, obj):
         return obj.get_total_students()
     get_total_students.short_description = 'Class size'
+
+# Academic services are configured by staff; students only read assessments.
+from .models import AcademicPolicy, StudentAcademicProfile, TermAssessment, CourseOffering, CourseRegistration
+
+@admin.register(AcademicPolicy)
+class AcademicPolicyAdmin(admin.ModelAdmin):
+    list_display = ['name', 'is_demo', 'min_scholarship_average', 'graduation_credits', 'max_term_credits']
+    filter_horizontal = ['required_subjects']
+
+@admin.register(StudentAcademicProfile)
+class StudentAcademicProfileAdmin(admin.ModelAdmin):
+    list_display = ['student', 'policy', 'english_certified', 'physical_education_completed', 'defense_completed', 'financial_clearance']
+    search_fields = ['student__student_id', 'student__full_name']
+
+@admin.register(TermAssessment)
+class TermAssessmentAdmin(admin.ModelAdmin):
+    list_display = ['student', 'semester', 'conduct_score']
+    list_filter = ['semester']
+    search_fields = ['student__student_id', 'student__full_name']
+
+@admin.register(CourseOffering)
+class CourseOfferingAdmin(admin.ModelAdmin):
+    list_display = ['schedule', 'capacity', 'opens_on', 'closes_on', 'is_open']
+    list_filter = ['is_open', 'schedule__semester']
+    filter_horizontal = ['prerequisites']
+
+@admin.register(CourseRegistration)
+class CourseRegistrationAdmin(admin.ModelAdmin):
+    list_display = ['student', 'offering', 'status', 'created_at', 'updated_at']
+    list_filter = ['status', 'offering__schedule__semester']
+    search_fields = ['student__student_id', 'student__full_name']
+    readonly_fields = ['student', 'offering', 'status', 'created_at', 'updated_at']
+    def has_add_permission(self, request): return False
+    def has_delete_permission(self, request, obj=None): return False

@@ -1,3 +1,9 @@
+from decimal import Decimal
+import decimal
+import io
+from .academic_services import score_to_scale4_and_letter, academic_classification
+from .faculty import teacher_details
+from .enrollment import session_students, student_schedules
 from django.shortcuts import render, redirect, get_object_or_404
 from django.http import JsonResponse, StreamingHttpResponse, HttpResponse
 from django.views.decorators.http import require_http_methods
@@ -6,7 +12,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.db.models import Count, Avg
 from django.views.static import serve
-from .models import Student, AttendanceRecord, Camera, SystemStats, Subject, ClassRoom, Schedule, AttendanceSession, Grade
+from .models import Student, AttendanceRecord, Camera, SystemStats, Subject, ClassRoom, Schedule, AttendanceSession, Grade, AcademicTerm, GradeAuditLog, LeaveRequest
 from . import face_recognition as fr
 from .attendance_import import import_csv_bytes
 from .attendance_service import (
@@ -36,6 +42,12 @@ from django.core.cache import cache
 
 PORTAL_FRONTEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'APP', 'Portal'))
 KIOSK_FRONTEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'APP', 'Máy điểm danh'))
+ADMIN_STATIC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'static'))
+
+
+def static_asset(request, path):
+    """Serve admin static files directly."""
+    return serve(request, path, document_root=ADMIN_STATIC_ROOT)
 PORTAL_STUDENT_SESSION_KEY = 'portal_student_pk'
 PORTAL_STUDENT_SESSION_AGE = 8 * 60 * 60
 logger = logging.getLogger(__name__)
@@ -50,7 +62,11 @@ def student_portal(request):
 
 
 def student_portal_asset(request, path):
-    return serve(request, path, document_root=PORTAL_FRONTEND_ROOT)
+    response = serve(request, path, document_root=PORTAL_FRONTEND_ROOT)
+    # Windows may register .mjs as text/plain; browsers require a JavaScript MIME type.
+    if path.endswith('.mjs'):
+        response['Content-Type'] = 'text/javascript; charset=utf-8'
+    return response
 
 
 def attendance_kiosk(request):
@@ -130,36 +146,25 @@ def kiosk_api_required(view):
 
 
 def home(request):
-    """Management entry point. The kiosk runs as a separate application."""
-    return redirect('portal:admin_dashboard')
-
-    """Legacy portal landing page kept below for reference."""
-    # Lấy thống kê
+    """UTH Digital Campus Central Hub & Gateway."""
     total_students = Student.objects.count()
-    
-    # Tính tỷ lệ điểm danh hôm nay
     today = timezone.localdate()
     today_attendance = AttendanceRecord.objects.filter(
         date=today, 
         status__in=['present', 'late']
     ).count()
     
-    if total_students > 0:
-        attendance_rate = round((today_attendance / total_students) * 100, 1)
-    else:
-        attendance_rate = 0
-    
-    # Số camera đang hoạt động
+    attendance_rate = round((today_attendance / total_students) * 100, 1) if total_students > 0 else 0
     active_cameras = Camera.objects.filter(status='active').count()
     
     context = {
         'total_students': total_students,
         'attendance_rate': attendance_rate,
         'active_cameras': active_cameras,
-        'avg_scan_time': None,
-        'opencv_plugin_url': settings.OPENCV_PLUGIN_URL,
-        'admin_url': settings.ADMIN_DASHBOARD_URL,
-        'register_url': settings.REGISTER_FACE_URL,
+        'avg_scan_time': '0.8',
+        'opencv_plugin_url': getattr(settings, 'OPENCV_PLUGIN_URL', '/kiosk/'),
+        'admin_url': getattr(settings, 'ADMIN_DASHBOARD_URL', '/admin-dashboard/'),
+        'register_url': getattr(settings, 'REGISTER_FACE_URL', '/register/'),
     }
     return render(request, 'portal/home.html', context)
 
@@ -184,7 +189,33 @@ def admin_dashboard(request):
     
     # Vắng = Tổng sinh viên - Có mặt unique (không được âm)
     today_absent = max(0, total_students - today_attended_unique)
+    attendance_rate = round((today_attended_unique / total_students * 100), 1) if total_students > 0 else 0.0
+
+    recent_audits = GradeAuditLog.objects.select_related(
+        'grade__student', 'grade__subject', 'changed_by'
+    ).order_by('-changed_at')[:15]
     
+    # Đồng bộ mở các buổi học hôm nay và lấy dữ liệu thời khóa biểu
+    _open_today_sessions(today)
+    schedules = Schedule.objects.filter(is_active=True).select_related('subject', 'classroom')
+    current_day = today.weekday()
+    day_names_en = {
+        0: 'Monday', 1: 'Tuesday', 2: 'Wednesday', 3: 'Thursday',
+        4: 'Friday', 5: 'Saturday', 6: 'Sunday',
+    }
+    schedule_by_day = {}
+    current_day_name = day_names_en.get(current_day, 'Today')
+    for day_num, day_name in Schedule.DAY_CHOICES:
+        schedule_by_day[day_num] = {
+            'name': day_name,
+            'name_en': day_names_en.get(day_num, day_name),
+            'schedules': schedules.filter(day_of_week=day_num)
+        }
+
+    today_sessions = AttendanceSession.objects.filter(date=today).select_related('schedule__subject', 'schedule__classroom')
+    active_sessions = AttendanceSession.objects.filter(status='active').select_related('schedule__subject', 'schedule__classroom')
+    semesters = AcademicTerm.objects.all()
+
     context = {
         'total_students': total_students,
         'today': today,
@@ -192,10 +223,20 @@ def admin_dashboard(request):
         'today_present': today_records.filter(status='present').values('student').distinct().count(),
         'today_late': today_records.filter(status='late').values('student').distinct().count(),
         'today_absent': today_absent,
-        'recent_records': AttendanceRecord.objects.select_related('student').order_by('-date', '-time_in')[:20],
+        'attendance_rate': attendance_rate,
+        'recent_records': AttendanceRecord.objects.select_related('student').order_by('-date', '-time_in')[:25],
+        'recent_audits': recent_audits,
+        'pending_leaves': LeaveRequest.objects.filter(status='pending').select_related('student', 'subject').order_by('-created_at')[:15],
         'cameras': Camera.objects.all(),
         'students': Student.objects.all().order_by('-created_at'),  # Danh sách sinh viên
         'classrooms': ClassRoom.objects.all().order_by('class_id'),
+        'subjects': Subject.objects.all().order_by('code'),
+        'schedule_by_day': schedule_by_day,
+        'current_day': current_day,
+        'current_day_name': current_day_name,
+        'today_sessions': today_sessions,
+        'active_sessions': active_sessions,
+        'semesters': semesters,
     }
     return render(request, 'portal/admin_dashboard.html', context)
 
@@ -241,51 +282,10 @@ def _open_today_sessions(today=None):
 
 @staff_member_required(login_url='/admin/login/')
 def schedule_view(request):
-    """Trang thời khóa biểu - Chọn buổi học để điểm danh"""
+    """Trang thời khóa biểu - Điều hướng đồng bộ vào tab Lịch & Buổi học của Admin Dashboard"""
     today = timezone.localdate()
-    current_day = today.weekday()  # 0 = Monday, khớp với DAY_CHOICES
-
-    # Lấy tất cả thời khóa biểu
-    schedules = Schedule.objects.filter(is_active=True).select_related('subject', 'classroom')
-
-    # Tạo dữ liệu thời khóa biểu theo ngày
-    schedule_by_day = {}
-    day_names_en = {
-        0: 'Monday', 1: 'Tuesday', 2: 'Wednesday', 3: 'Thursday',
-        4: 'Friday', 5: 'Saturday', 6: 'Sunday',
-    }
-    current_day_name = ''
-    for day_num, day_name in Schedule.DAY_CHOICES:
-        schedule_by_day[day_num] = {
-            'name': day_name,
-            'name_en': day_names_en[day_num],
-            'schedules': schedules.filter(day_of_week=day_num)
-        }
-        if day_num == current_day:
-            current_day_name = day_names_en[day_num]
-
-    # Open today's scheduled classes automatically. The kiosk can therefore
-    # receive attendance as soon as class time arrives, without a manual
-    # "Start session" action in the management UI.
     _open_today_sessions(today)
-
-    # Lấy các buổi điểm danh hôm nay
-    today_sessions = AttendanceSession.objects.filter(date=today).select_related('schedule__subject', 'schedule__classroom')
-
-    # Lấy các buổi đang hoạt động
-    active_sessions = AttendanceSession.objects.filter(status='active').select_related('schedule__subject', 'schedule__classroom')
-
-    context = {
-        'schedule_by_day': schedule_by_day,
-        'today': today,
-        'current_day': current_day,
-        'current_day_name': current_day_name,   # Tên thứ hiện tại (vd: "Thứ Ba")
-        'today_sessions': today_sessions,
-        'active_sessions': active_sessions,
-        'subjects': Subject.objects.all(),
-        'classrooms': ClassRoom.objects.all(),
-    }
-    return render(request, 'portal/schedule.html', context)
+    return redirect('/admin-dashboard/#schedule')
 
 
 @staff_member_required(login_url='/admin/login/')
@@ -321,7 +321,7 @@ def attendance_session(request, session_id):
     session = get_object_or_404(AttendanceSession, id=session_id)
     
     # Lấy danh sách sinh viên trong lớp
-    students_in_class = session.schedule.classroom.students.all()
+    students_in_class = session_students(session)
     
     # Lấy các bản ghi điểm danh của buổi này
     attendance_records = list(session.session_records.select_related('student'))
@@ -347,6 +347,8 @@ def attendance_session(request, session_id):
 def end_attendance_session(request, session_id):
     """Kết thúc buổi điểm danh"""
     session = get_object_or_404(AttendanceSession, id=session_id)
+    if session.status in ('cancelled', 'postponed'):
+        return HttpResponse('Cannot finalize a cancelled or postponed session', status=409)
     finalize_session_attendance(session)
     session.status = 'completed'
     session.end_time = timezone.now()
@@ -359,6 +361,8 @@ def end_attendance_session(request, session_id):
 def api_finalize_session(request, session_id):
     """Close a session and persist absent rows for the complete class roster."""
     session = get_object_or_404(AttendanceSession, id=session_id)
+    if session.status in ('cancelled', 'postponed'):
+        return JsonResponse({'success': False, 'error': 'Cannot finalize a cancelled or postponed session'}, status=409)
     created = finalize_session_attendance(session)
     session.status = 'completed'
     session.end_time = timezone.now()
@@ -449,8 +453,7 @@ def api_stats(request):
     })
 
 
-@kiosk_api_required
-@csrf_exempt
+@admin_api_required
 @require_http_methods(["POST"])
 def api_record_attendance(request):
     """
@@ -546,7 +549,7 @@ def api_attendance_today(request):
     else:
         today = timezone.localdate()
     records = AttendanceRecord.objects.filter(date=today).select_related(
-        'student', 'session__schedule__subject', 'session__schedule__classroom'
+        'student', 'session__schedule__subject', 'session__schedule__classroom', 'session__schedule__semester'
     )
     subject_id = request.GET.get('subject_id')
     class_id = request.GET.get('class_id')
@@ -611,16 +614,16 @@ def _student_profile_payload(student):
 
 @require_http_methods(["POST"])
 def api_student_login(request):
-    """Start an isolated Portal session using an admin-registered student identity."""
+    """Start an isolated Portal session using an admin-registered student identity and password."""
     try:
         data = json.loads(request.body or '{}')
     except (TypeError, ValueError, json.JSONDecodeError):
-        return JsonResponse({'success': False, 'error': 'Invalid request body'}, status=400)
+        return JsonResponse({'success': False, 'error': 'Dữ liệu yêu cầu không hợp lệ'}, status=400)
 
     student_id = str(data.get('student_id') or '').strip()[:20]
-    class_value = str(data.get('class_name') or '').strip()[:100]
-    if not student_id or not class_value:
-        return JsonResponse({'success': False, 'error': 'Student ID and class are required'}, status=400)
+    auth_value = str(data.get('password') or data.get('class_name') or '').strip()[:100]
+    if not student_id or not auth_value:
+        return JsonResponse({'success': False, 'error': 'Mã sinh viên và mật khẩu / lớp là bắt buộc.'}, status=400)
 
     identity_digest = hashlib.sha256(student_id.casefold().encode('utf-8')).hexdigest()[:16]
     rate_key = f"portal-login:{request.META.get('REMOTE_ADDR', 'unknown')}:{identity_digest}"
@@ -628,13 +631,29 @@ def api_student_login(request):
     if attempts >= 10:
         return JsonResponse({
             'success': False,
-            'error': 'Too many sign-in attempts. Try again in five minutes.',
+            'error': 'Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 5 phút.',
         }, status=429)
     cache.set(rate_key, attempts + 1, timeout=300)
 
     student = Student.objects.filter(student_id__iexact=student_id).prefetch_related('classrooms').first()
-    supplied_class = _normalise_identity_value(class_value)
-    if not student or supplied_class not in _student_class_values(student):
+    if not student:
+        return JsonResponse({
+            'success': False,
+            'error': 'Student ID or class does not match an admin-registered student.',
+        }, status=401)
+
+    authenticated = False
+    if student.password_hash:
+        authenticated = student.check_password(auth_value)
+    else:
+        # Fallback to class validation when password has not been explicitly set yet
+        supplied_class = _normalise_identity_value(auth_value)
+        if supplied_class in _student_class_values(student) or auth_value in (student.class_name, '123456'):
+            authenticated = True
+            student.set_password(auth_value)
+            student.save(update_fields=['password_hash'])
+
+    if not authenticated:
         return JsonResponse({
             'success': False,
             'error': 'Student ID or class does not match an admin-registered student.',
@@ -647,6 +666,361 @@ def api_student_login(request):
     response = JsonResponse({'success': True, 'data': _student_profile_payload(student)})
     response['Cache-Control'] = 'private, no-store'
     return response
+
+
+@student_api_required
+@require_http_methods(["POST"])
+def api_student_change_password(request):
+    """Cho phép sinh viên đổi mật khẩu bảo mật tài khoản cá nhân."""
+    try:
+        data = json.loads(request.body or '{}')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Dữ liệu không hợp lệ'}, status=400)
+
+    student = request.portal_student
+    old_password = str(data.get('old_password') or '').strip()
+    new_password = str(data.get('new_password') or '').strip()
+
+    if len(new_password) < 6:
+        return JsonResponse({'success': False, 'error': 'Mật khẩu mới phải có ít nhất 6 ký tự.'}, status=400)
+
+    if student.password_hash and not student.check_password(old_password):
+        return JsonResponse({'success': False, 'error': 'Mật khẩu hiện tại không đúng.'}, status=400)
+
+    student.set_password(new_password)
+    student.save(update_fields=['password_hash'])
+    return JsonResponse({'success': True, 'message': 'Đổi mật khẩu thành công.'})
+
+
+@admin_api_required
+@require_http_methods(["POST"])
+def api_admin_update_grade(request):
+    """Cập nhật điểm thành phần cho sinh viên và lưu nhật ký kiểm toán GradeAuditLog."""
+    try:
+        data = json.loads(request.body or '{}')
+        student_id = str(data.get('student_id') or '').strip()
+        subject_id = str(data.get('subject_id') or '').strip()
+        semester = str(data.get('semester') or '').strip()
+        assessment_type = str(data.get('assessment_type') or 'TOTAL').strip().upper()
+        score = Decimal(str(data.get('score')))
+        reason = str(data.get('reason') or 'Cập nhật từ cán bộ quản lý').strip()
+    except (TypeError, ValueError, json.JSONDecodeError, decimal.InvalidOperation):
+        return JsonResponse({'success': False, 'error': 'Dữ liệu điểm không hợp lệ.'}, status=400)
+
+    if score < 0 or score > 10:
+        return JsonResponse({'success': False, 'error': 'Điểm số phải nằm trong khoảng từ 0 đến 10.'}, status=400)
+
+    student = Student.objects.filter(student_id=student_id).first()
+    if not student:
+        return JsonResponse({'success': False, 'error': 'Không tìm thấy sinh viên.'}, status=404)
+    subject = Subject.objects.filter(code=subject_id).first()
+    if not subject:
+        return JsonResponse({'success': False, 'error': 'Không tìm thấy môn học.'}, status=404)
+
+    grade = Grade.objects.filter(
+        student=student, subject=subject, semester=semester, assessment_type=assessment_type
+    ).first()
+    before_score = grade.score if grade else None
+
+    if grade:
+        grade.score = score
+        grade.save(update_fields=['score', 'updated_at'])
+    else:
+        grade = Grade.objects.create(
+            student=student, subject=subject, semester=semester, assessment_type=assessment_type, score=score
+        )
+
+    GradeAuditLog.objects.create(
+        grade=grade,
+        changed_by=request.user if request.user.is_authenticated else None,
+        before_score=before_score,
+        after_score=score,
+        reason=reason
+    )
+
+    return JsonResponse({
+        'success': True,
+        'message': 'Đã cập nhật điểm và ghi nhật ký kiểm toán.',
+        'data': {
+            'student_id': student.student_id,
+            'subject_id': subject.code,
+            'semester': semester,
+            'assessment_type': assessment_type,
+            'before_score': float(before_score) if before_score is not None else None,
+            'after_score': float(score),
+        }
+    })
+
+
+@admin_api_required
+@require_http_methods(["GET"])
+def api_admin_grade_template_csv(request):
+    """Xuất file mẫu CSV điểm theo môn học và học kỳ."""
+    subject_code = request.GET.get('subject_code', '').strip()
+    semester = request.GET.get('semester', '2026-1').strip()
+
+    response = HttpResponse(content_type='text/csv; charset=utf-8')
+    filename = f"uth-grade-template-{subject_code or 'all'}-{semester}.csv"
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    response.write('\ufeff')
+    writer = csv.writer(response)
+    writer.writerow(['student_id', 'full_name', 'class_name', 'subject_code', 'semester', 'cc', 'gk', 'ck', 'bonus', 'reason'])
+
+    students = Student.objects.all().order_by('class_name', 'student_id')
+    if subject_code:
+        subject = Subject.objects.filter(code=subject_code).first()
+        if subject:
+            existing = {
+                (g.student_id, g.assessment_type): float(g.score)
+                for g in Grade.objects.filter(subject=subject, semester=semester)
+            }
+            for st in students:
+                cc = existing.get((st.pk, 'ATTENDANCE'), '')
+                gk = existing.get((st.pk, 'MIDTERM'), '')
+                ck = existing.get((st.pk, 'FINAL'), '')
+                bonus = existing.get((st.pk, 'BONUS'), '')
+                writer.writerow([st.student_id, st.full_name, st.class_name, subject_code, semester, cc, gk, ck, bonus, ''])
+            return response
+
+    for st in students:
+        writer.writerow([st.student_id, st.full_name, st.class_name, subject_code, semester, '', '', '', '', ''])
+    return response
+
+
+@admin_api_required
+@require_http_methods(["POST"])
+def api_admin_import_grades_csv(request):
+    """Nhập điểm hàng loạt từ file CSV/Excel và tự động lưu GradeAuditLog."""
+    csv_text = ''
+    if 'file' in request.FILES:
+        uploaded = request.FILES['file']
+        raw = uploaded.read()
+        try:
+            csv_text = raw.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            csv_text = raw.decode('latin-1', errors='replace')
+    else:
+        csv_text = request.body.decode('utf-8-sig', errors='replace') if request.body else ''
+
+    if not csv_text.strip():
+        return JsonResponse({'success': False, 'error': 'Tập tin hoặc nội dung CSV trống.'}, status=400)
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    updated_students = set()
+    updated_grades = 0
+    errors = []
+
+    for idx, row in enumerate(reader, start=2):
+        student_id = str(row.get('student_id') or '').strip()
+        subject_code = str(row.get('subject_code') or '').strip()
+        semester = str(row.get('semester') or '2026-1').strip()
+        reason = str(row.get('reason') or '').strip() or 'Nhập điểm hàng loạt từ file CSV'
+
+        if not student_id or not subject_code:
+            continue
+
+        student = Student.objects.filter(student_id=student_id).first()
+        if not student:
+            errors.append(f"Dòng {idx}: Không tìm thấy sinh viên MSSV {student_id}")
+            continue
+
+        subject = Subject.objects.filter(code=subject_code).first()
+        if not subject:
+            errors.append(f"Dòng {idx}: Không tìm thấy môn học {subject_code}")
+            continue
+
+        components = [
+            ('ATTENDANCE', row.get('cc')),
+            ('MIDTERM', row.get('gk')),
+            ('FINAL', row.get('ck')),
+            ('BONUS', row.get('bonus')),
+        ]
+
+        for assessment_type, raw_val in components:
+            if raw_val is None or str(raw_val).strip() == '':
+                continue
+            try:
+                score = Decimal(str(raw_val).strip())
+                if score < 0 or score > 10:
+                    errors.append(f"Dòng {idx}: Điểm {assessment_type} ({score}) phải trong [0, 10]")
+                    continue
+            except (decimal.InvalidOperation, ValueError, TypeError):
+                errors.append(f"Dòng {idx}: Điểm {assessment_type} không hợp lệ: {raw_val}")
+                continue
+
+            grade = Grade.objects.filter(
+                student=student, subject=subject, semester=semester, assessment_type=assessment_type
+            ).first()
+            before_score = grade.score if grade else None
+
+            if grade:
+                grade.score = score
+                grade.save(update_fields=['score', 'updated_at'])
+            else:
+                grade = Grade.objects.create(
+                    student=student, subject=subject, semester=semester, assessment_type=assessment_type, score=score
+                )
+
+            GradeAuditLog.objects.create(
+                grade=grade,
+                changed_by=request.user if request.user.is_authenticated else None,
+                before_score=before_score,
+                after_score=score,
+                reason=reason
+            )
+            updated_students.add(student.student_id)
+            updated_grades += 1
+
+    return JsonResponse({
+        'success': True,
+        'message': f"Đã nhập thành công {updated_grades} đầu điểm cho {len(updated_students)} sinh viên.",
+        'updated_students_count': len(updated_students),
+        'updated_grades_count': updated_grades,
+        'errors': errors[:10]
+    })
+
+
+@student_api_required
+@require_http_methods(["GET"])
+def api_student_leave_requests(request):
+    """Lấy danh sách đơn xin nghỉ phép của sinh viên đang đăng nhập."""
+    student = request.portal_student
+    leaves = LeaveRequest.objects.filter(student=student).select_related('subject').order_by('-created_at')
+    data = [{
+        'id': l.id,
+        'subject_code': l.subject.code if l.subject else '',
+        'subject_name': l.subject.name if l.subject else 'Toàn bộ buổi học trong ngày',
+        'date': str(l.date),
+        'reason': l.reason,
+        'evidence_url': l.evidence_url,
+        'status': l.status,
+        'status_display': l.get_status_display(),
+        'review_note': l.review_note,
+        'created_at': l.created_at.strftime('%d/%m/%Y %H:%M'),
+    } for l in leaves]
+    return JsonResponse({'success': True, 'data': data})
+
+
+@student_api_required
+@require_http_methods(["POST"])
+def api_student_create_leave_request(request):
+    """Sinh viên nộp đơn xin nghỉ phép có lý do kèm minh chứng."""
+    student = request.portal_student
+    try:
+        data = json.loads(request.body or '{}')
+        date_str = str(data.get('date') or '').strip()
+        subject_id = str(data.get('subject_id') or '').strip()
+        reason = str(data.get('reason') or '').strip()
+        evidence_url = str(data.get('evidence_url') or '').strip()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Dữ liệu không hợp lệ.'}, status=400)
+
+    if not date_str or not reason:
+        return JsonResponse({'success': False, 'error': 'Vui lòng chọn ngày nghỉ và nêu rõ lý do.'}, status=400)
+
+    try:
+        leave_date = datetime.date.fromisoformat(date_str)
+    except ValueError:
+        return JsonResponse({'success': False, 'error': 'Định dạng ngày không hợp lệ (YYYY-MM-DD).'}, status=400)
+
+    subject = Subject.objects.filter(code=subject_id).first() if subject_id else None
+
+    leave = LeaveRequest.objects.create(
+        student=student,
+        subject=subject,
+        date=leave_date,
+        reason=reason,
+        evidence_url=evidence_url,
+        status='pending'
+    )
+
+    return JsonResponse({
+        'success': True,
+        'message': 'Đã gửi đơn xin nghỉ phép thành công. Vui lòng chờ cán bộ/giảng viên phê duyệt.',
+        'data': {'id': leave.id, 'status': leave.status}
+    })
+
+
+@admin_api_required
+@require_http_methods(["GET"])
+def api_admin_leave_requests(request):
+    """Cán bộ quản lý xem danh sách đơn xin nghỉ phép."""
+    status_filter = request.GET.get('status', '').strip()
+    qs = LeaveRequest.objects.select_related('student', 'subject', 'reviewed_by').order_by('-created_at')
+    if status_filter:
+        qs = qs.filter(status=status_filter)
+
+    data = [{
+        'id': l.id,
+        'student_id': l.student.student_id,
+        'student_name': l.student.full_name,
+        'class_name': l.student.class_name,
+        'subject_code': l.subject.code if l.subject else '',
+        'subject_name': l.subject.name if l.subject else 'Toàn bộ ngày',
+        'date': str(l.date),
+        'reason': l.reason,
+        'evidence_url': l.evidence_url,
+        'status': l.status,
+        'status_display': l.get_status_display(),
+        'reviewed_by': l.reviewed_by.username if l.reviewed_by else None,
+        'review_note': l.review_note,
+        'created_at': l.created_at.strftime('%d/%m/%Y %H:%M'),
+    } for l in qs]
+    return JsonResponse({'success': True, 'data': data})
+
+
+@admin_api_required
+@require_http_methods(["POST"])
+def api_admin_review_leave_request(request, request_id):
+    """Cán bộ phê duyệt hoặc từ chối đơn xin nghỉ phép."""
+    leave = get_object_or_404(LeaveRequest, id=request_id)
+    try:
+        data = json.loads(request.body or '{}')
+        action = str(data.get('action') or '').strip().lower()
+        note = str(data.get('note') or '').strip()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'success': False, 'error': 'Dữ liệu không hợp lệ.'}, status=400)
+
+    if action not in ('approve', 'reject'):
+        return JsonResponse({'success': False, 'error': 'Hành động phải là approve hoặc reject.'}, status=400)
+
+    if action == 'approve':
+        leave.status = 'approved'
+        leave.reviewed_by = request.user if request.user.is_authenticated else None
+        leave.reviewed_at = timezone.now()
+        leave.review_note = note or 'Đã phê duyệt đơn xin nghỉ phép'
+        leave.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'review_note', 'updated_at'])
+
+        session_qs = AttendanceSession.objects.filter(date=leave.date)
+        if leave.subject_id:
+            session_qs = session_qs.filter(schedule__subject=leave.subject)
+        target_session = session_qs.first()
+
+        record = AttendanceRecord.objects.filter(student=leave.student, date=leave.date).first()
+        if record:
+            record.status = 'excused'
+            record.attendance_code = 'EXCUSED'
+            record.attendance_label = 'NGHỈ CÓ PHÉP'
+            record.notes = f"Đơn nghỉ phép đã duyệt: {leave.reason}"
+            record.save(update_fields=['status', 'attendance_code', 'attendance_label', 'notes'])
+        else:
+            AttendanceRecord.objects.create(
+                student=leave.student,
+                session=target_session,
+                date=leave.date,
+                status='excused',
+                attendance_code='EXCUSED',
+                attendance_label='NGHỈ CÓ PHÉP',
+                notes=f"Đơn nghỉ phép đã duyệt: {leave.reason}"
+            )
+        return JsonResponse({'success': True, 'message': 'Đã duyệt đơn xin nghỉ phép và chuyển trạng thái điểm danh sang Nghỉ có phép.'})
+    else:
+        leave.status = 'rejected'
+        leave.reviewed_by = request.user if request.user.is_authenticated else None
+        leave.reviewed_at = timezone.now()
+        leave.review_note = note or 'Không chấp thuận lý do nghỉ phép'
+        leave.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'review_note', 'updated_at'])
+        return JsonResponse({'success': True, 'message': 'Đã từ chối đơn xin nghỉ phép.'})
 
 
 @require_http_methods(["POST"])
@@ -664,6 +1038,7 @@ def _attendance_record_payload(record):
     return {
         'attendance_id': record.attendance_id,
         'session_id': session_external_id(session) if session else None,
+        'semester': session.schedule.semester.code if session and session.schedule.semester_id else '',
         'date': str(record.date),
         'subject_id': session.schedule.subject.code if session else None,
         'subject_name': session.schedule.subject.name if session else None,
@@ -679,18 +1054,108 @@ def _attendance_record_payload(record):
     }
 
 
+def _student_grouped_grades(grades, enrolled_schedules=None):
+    grouped = {}
+    if enrolled_schedules:
+        for sch in enrolled_schedules:
+            subject = sch.subject
+            sem_code = sch.semester.code if sch.semester else ''
+            if sem_code:
+                key = (subject.code, sem_code)
+                grouped[key] = {
+                    'subject_id': subject.code,
+                    'subject_name': subject.name,
+                    'credits': subject.credits,
+                    'semester': sem_code,
+                    'weights': {
+                        'cc': float(getattr(subject, 'weight_cc', 0.10)),
+                        'gk': float(getattr(subject, 'weight_gk', 0.30)),
+                        'ck': float(getattr(subject, 'weight_ck', 0.60)),
+                    },
+                    'bonus_method': getattr(subject, 'bonus_method', 'DIRECT'),
+                    'cc': None,
+                    'gk': None,
+                    'ck': None,
+                    'bonus': None,
+                    'official_total': None,
+                }
+
+    for grade in grades:
+        key = (grade.subject.code, grade.semester)
+        if key not in grouped:
+            subject = grade.subject
+            grouped[key] = {
+                'subject_id': subject.code,
+                'subject_name': subject.name,
+                'credits': subject.credits,
+                'semester': grade.semester,
+                'weights': {
+                    'cc': float(getattr(subject, 'weight_cc', 0.10)),
+                    'gk': float(getattr(subject, 'weight_gk', 0.30)),
+                    'ck': float(getattr(subject, 'weight_ck', 0.60)),
+                },
+                'bonus_method': getattr(subject, 'bonus_method', 'DIRECT'),
+                'cc': None,
+                'gk': None,
+                'ck': None,
+                'bonus': None,
+                'official_total': None,
+            }
+        score = float(grade.score)
+        atype = grade.assessment_type.upper()
+        if atype in ('ATTENDANCE', 'CC'):
+            grouped[key]['cc'] = score
+        elif atype in ('MIDTERM', 'GK'):
+            grouped[key]['gk'] = score
+        elif atype in ('FINAL', 'CK'):
+            grouped[key]['ck'] = score
+        elif atype in ('BONUS', 'PROCESS', 'ASSIGNMENT', 'QUIZ'):
+            grouped[key]['bonus'] = score
+        elif atype in ('TOTAL',):
+            grouped[key]['official_total'] = score
+
+    result = []
+    for item in grouped.values():
+        w_cc = item['weights']['cc']
+        w_gk = item['weights']['gk']
+        w_ck = item['weights']['ck']
+        cc = item['cc']
+        gk = item['gk']
+        ck = item['ck']
+        bonus = item['bonus']
+        
+        if cc is not None or gk is not None or ck is not None:
+            sum_weighted = (
+                (cc * w_cc if cc is not None else 0.0) +
+                (gk * w_gk if gk is not None else 0.0) +
+                (ck * w_ck if ck is not None else 0.0)
+            )
+            if bonus is not None and item['bonus_method'] == 'DIRECT':
+                sum_weighted += bonus
+            item['calculated_total'] = round(min(10.0, max(0.0, sum_weighted)), 2)
+        else:
+            item['calculated_total'] = None
+
+        final_score = item['official_total'] if item['official_total'] is not None else item['calculated_total']
+        scale4 = score_to_scale4_and_letter(final_score)
+        item['letter_grade'] = scale4['letter']
+        item['gpa_scale_4'] = scale4['gpa']
+        item['rank'] = scale4['rank']
+
+        result.append(item)
+    return result
+
+
 @student_api_required
 @require_http_methods(["GET"])
 def api_student_dashboard(request):
     """Return the complete Portal workspace in one optimized, student-scoped response."""
-    from .attendance_service import session_period_count
+    from .student_attendance import student_course_attendance
+    from .student_schedule import weekly_timetable
 
     student = request.portal_student
     today = timezone.localdate()
-    schedules = list(Schedule.objects.filter(
-        is_active=True,
-        classroom__students=student,
-    ).select_related('subject', 'classroom').distinct())
+    schedules = list(student_schedules(student).filter(is_active=True).select_related('subject', 'classroom').distinct())
     records = list(AttendanceRecord.objects.filter(student=student).select_related(
         'session__schedule__subject', 'session__schedule__classroom'
     ))
@@ -702,7 +1167,7 @@ def api_student_dashboard(request):
         'day_name': schedule.get_day_of_week_display(),
         'subject_id': schedule.subject.code,
         'subject_name': schedule.subject.name,
-        'teacher': schedule.subject.teacher,
+        'teacher': schedule.subject.teacher, 'teacher_contact': teacher_details(schedule.subject),
         'class_id': schedule.classroom.class_id,
         'classroom': schedule.classroom.name,
         'room': schedule.room,
@@ -720,6 +1185,13 @@ def api_student_dashboard(request):
         'updated_at': grade.updated_at.isoformat(),
     } for grade in grades]
 
+    grouped_grade_data = _student_grouped_grades(grades, enrolled_schedules=schedules)
+
+    graded_items = [g for g in grouped_grade_data if g.get('gpa_scale_4') is not None]
+    total_credits = sum(g['credits'] for g in graded_items)
+    cumulative_gpa_4 = round(sum(g['gpa_scale_4'] * g['credits'] for g in graded_items) / total_credits, 2) if total_credits else None
+    academic_rank = academic_classification(cumulative_gpa_4)
+
     summary = {
         'total_records': len(records),
         'on_time': 0,
@@ -735,63 +1207,30 @@ def api_student_dashboard(request):
         'ABSENT_TWO_PERIODS': 'absent_two_periods',
         'ABSENT': 'absent',
     }
-    subjects = {}
-    for schedule in schedules:
-        subjects.setdefault(schedule.subject_id, {
-            'subject_id': schedule.subject.code,
-            'subject_name': schedule.subject.name,
-            'absent_periods': 0,
-            'late_periods': 0,
-            'late_events': 0,
-            'grades': [],
-        })
-    for grade in grades:
-        item = subjects.setdefault(grade.subject_id, {
-            'subject_id': grade.subject.code,
-            'subject_name': grade.subject.name,
-            'absent_periods': 0,
-            'late_periods': 0,
-            'late_events': 0,
-            'grades': [],
-        })
-        item['grades'].append({
-            'semester': grade.semester,
-            'assessment_type': grade.assessment_type,
-            'score': float(grade.score),
-        })
     for record in records:
         summary_key = summary_keys.get(record.attendance_code)
         if summary_key:
             summary[summary_key] += 1
-        if not record.session_id:
-            continue
-        subject = record.session.schedule.subject
-        item = subjects.setdefault(subject.id, {
-            'subject_id': subject.code,
-            'subject_name': subject.name,
-            'absent_periods': 0,
-            'late_periods': 0,
-            'late_events': 0,
-            'grades': [],
-        })
-        if record.status == 'absent':
-            item['absent_periods'] += record.attendance_periods if record.attendance_periods is not None else session_period_count(record.session)
-        elif record.status == 'late':
-            item['late_events'] += 1
-            item['late_periods'] += record.attendance_periods or 0
-    for item in subjects.values():
-        item['exam_prohibited'] = item['absent_periods'] > 3
-        item['exam_status'] = 'EXAM PROHIBITED' if item['exam_prohibited'] else 'ELIGIBLE'
+    course_data = student_course_attendance(student, today)
 
+    week = weekly_timetable(student, schedules, today)
     response = JsonResponse({'success': True, 'data': {
         'profile': _student_profile_payload(student),
         'date': str(today),
         'schedule': schedule_data,
-        'schedule_today': [item for item in schedule_data if item['day_of_week'] == today.weekday()],
+        'schedule_week': week,
+        'schedule_today': [item for item in week if item['date'] == today.isoformat()],
         'attendance': attendance_data,
         'attendance_summary': summary,
         'grades': grade_data,
-        'subjects': sorted(subjects.values(), key=lambda item: item['subject_id']),
+        'grouped_grades': grouped_grade_data,
+        'cumulative_gpa_4': cumulative_gpa_4,
+        'academic_rank': academic_rank,
+        'subjects': course_data['courses'],
+        'course_attendance': course_data['courses'],
+        'semesters': course_data['semesters'],
+        'selected_semester': course_data['selected_semester'],
+        'attendance_notifications': course_data['notifications'],
         'synchronized_at': timezone.now().isoformat(),
     }})
     response['Cache-Control'] = 'private, no-store'
@@ -811,16 +1250,12 @@ def api_student_schedule_today(request):
     if not student:
         return JsonResponse({'success': False, 'error': 'Student profile not linked'}, status=403)
     today = timezone.localdate()
-    schedules = Schedule.objects.filter(
-        is_active=True,
-        day_of_week=today.weekday(),
-        classroom__students=student,
-    ).select_related('subject', 'classroom').distinct()
+    schedules = student_schedules(student).filter(is_active=True, day_of_week=today.weekday()).select_related('subject', 'classroom').distinct()
     return JsonResponse({'success': True, 'date': str(today), 'data': [{
         'schedule_id': schedule.id,
         'subject_id': schedule.subject.code,
         'subject_name': schedule.subject.name,
-        'teacher': schedule.subject.teacher,
+        'teacher': schedule.subject.teacher, 'teacher_contact': teacher_details(schedule.subject),
         'class_id': schedule.classroom.class_id,
         'classroom': schedule.classroom.name,
         'room': schedule.room,
@@ -899,44 +1334,12 @@ def api_student_grades(request):
 @student_api_required
 @require_http_methods(["GET"])
 def api_student_subject_summary(request):
-    """Aggregate attendance and grades per subject for Portal."""
-    from .attendance_service import session_period_count
-
-    student = _current_student(request)
-    if not student:
-        return JsonResponse({'success': False, 'error': 'Student profile not linked'}, status=403)
-    records = list(AttendanceRecord.objects.filter(student=student).select_related('session__schedule__subject'))
-    grades = list(Grade.objects.filter(student=student).select_related('subject'))
-    subjects = {}
-    for grade in grades:
-        item = subjects.setdefault(grade.subject_id, {
-            'subject_id': grade.subject.code, 'subject_name': grade.subject.name,
-            'absent_periods': 0, 'late_periods': 0, 'late_events': 0,
-            'grades': [],
-        })
-        item['grades'].append({
-            'semester': grade.semester, 'assessment_type': grade.assessment_type,
-            'score': float(grade.score),
-        })
-    for record in records:
-        if not record.session_id:
-            continue
-        subject = record.session.schedule.subject
-        item = subjects.setdefault(subject.id, {
-            'subject_id': subject.code, 'subject_name': subject.name,
-            'absent_periods': 0, 'late_periods': 0, 'late_events': 0,
-            'grades': [],
-        })
-        periods = record.attendance_periods
-        if record.status == 'absent':
-            item['absent_periods'] += periods if periods is not None else session_period_count(record.session)
-        elif record.status == 'late':
-            item['late_events'] += 1
-            item['late_periods'] += periods or 0
-    for item in subjects.values():
-        item['exam_prohibited'] = item['absent_periods'] > 3
-        item['exam_status'] = 'EXAM PROHIBITED' if item['exam_prohibited'] else 'ELIGIBLE'
-    return JsonResponse({'success': True, 'data': sorted(subjects.values(), key=lambda item: item['subject_id'])})
+    """Use the same semester-scoped rule as the student dashboard."""
+    from .student_attendance import student_course_attendance
+    result = student_course_attendance(request.portal_student, timezone.localdate())
+    response = JsonResponse({'success': True, 'data': result['courses']})
+    response['Cache-Control'] = 'private, no-store'
+    return response
 
 
 # =====================================================
@@ -982,6 +1385,7 @@ def api_register_face(request):
         
         # Decode và xử lý ảnh
         registered_count = 0
+        rejected_images = []
         for img_b64 in images_base64:
             try:
                 # Xóa header base64 nếu có
@@ -1003,6 +1407,8 @@ def api_register_face(request):
                         email=email,
                     )
                     if isinstance(success, tuple):
+                        if not success[0]:
+                            rejected_images.append(success[1])
                         success = success[0]
                     if success:
                         registered_count += 1
@@ -1042,14 +1448,15 @@ def api_register_face(request):
                 'data': {
                     'student_id': student_id,
                     'name': name,
-                    'faces_registered': registered_count
+                    'faces_registered': registered_count,
+                    'rejected_images': rejected_images,
                 }
             })
         else:
             return JsonResponse({
                 'success': False,
                 'code': 'NO_FACE_DETECTED',
-                'error': 'No clear face was detected in the selected image.'
+                'error': rejected_images[0] if rejected_images else 'No clear face was detected in the selected image.'
             }, status=400)
             
     except json.JSONDecodeError:
@@ -1196,153 +1603,6 @@ def api_update_student(request, student_id):
         }, status=500)
 
 
-@kiosk_api_required
-@csrf_exempt
-@require_http_methods(["POST"])
-def api_recognize_face(request):
-    """Recognize one camera frame and persist the canonical attendance event."""
-    try:
-        data = json.loads(request.body)
-        image_base64 = data.get('image')
-        session_ref = data.get('session_id')
-        device_id = str(data.get('device_id') or 'KIOSK-LOCAL')[:80]
-        
-        if not image_base64:
-            return JsonResponse({
-                'success': False,
-                'error': 'Missing image'
-            }, status=400)
-        
-        # Xóa header base64 nếu có
-        if ',' in image_base64:
-            image_base64 = image_base64.split(',')[1]
-        
-        if not isinstance(image_base64, str) or len(image_base64) > 6 * 1024 * 1024:
-            return JsonResponse({'success': False, 'error': 'Image exceeds 4 MB limit'}, status=413)
-        img_data = base64.b64decode(image_base64, validate=True)
-        nparr = np.frombuffer(img_data, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is None:
-            return JsonResponse({
-                'success': False,
-                'error': 'Invalid image data'
-            }, status=400)
-        
-        # Nhận diện khuôn mặt qua InsightFace
-        results = fr.recognize_frame(frame)
-        now = timezone.localtime()
-        today = now.date()
-        current_time = now.time()
-
-        try:
-            session_obj = resolve_session(session_ref) if session_ref else None
-        except AttendanceSession.DoesNotExist:
-            return JsonResponse({'success': False, 'error': 'Session not found'}, status=404)
-
-        if session_obj and session_obj.status != 'active':
-            return JsonResponse({'success': False, 'error': 'Session is not active'}, status=409)
-
-        recognized = []
-        canonical = None
-
-        for item in results:
-            name = item.get('name', 'Unknown')
-            conf = item.get('confidence', 0.0)
-            bbox = item.get('bbox', [])
-            
-            face_info = {
-                'name': name,
-                'confidence': round(conf, 1),
-                'bbox': bbox,
-                'student_id': '',
-                'class_name': '',
-                'status': 'unknown',
-                'is_new_attendance': False
-            }
-            
-            if name != "Unknown":
-                student = Student.objects.filter(full_name__iexact=name).first()
-                if not student:
-                    student = Student.objects.filter(student_id__iexact=name).first()
-                
-                if student:
-                    face_info['student_id'] = student.student_id
-                    face_info['class_name'] = student.class_name
-                    face_info['name'] = student.full_name
-                    
-                    if session_obj is None:
-                        return JsonResponse({'success': False, 'error': 'An active session is required'}, status=409)
-                    enrolled = session_obj.schedule.classroom.students.filter(pk=student.pk).exists()
-                    if not enrolled:
-                        face_info.update({
-                            'status': 'wrong_class',
-                            'attendance_code': 'WRONG_CLASS',
-                            'attendance_label': 'WRONG CLASS',
-                            'error': 'Student is not enrolled in this class session',
-                            'is_new_attendance': False,
-                            'already_checked_in': False,
-                        })
-                        recognized.append(face_info)
-                        continue
-                    try:
-                        record, created, timing = record_attendance_event(
-                            session=session_obj,
-                            student=student,
-                            check_in_at=current_time,
-                            confidence=conf / 100.0,
-                            method=METHOD_FACIAL_RECOGNITION,
-                            device_id=device_id,
-                        )
-                    except ValueError as error:
-                        return JsonResponse({'success': False, 'error': str(error)}, status=409)
-
-                    face_info['status'] = record.status
-                    face_info['attendance_code'] = record.attendance_code or timing['attendance_code']
-                    face_info['attendance_label'] = record.attendance_label or timing['attendance_label']
-                    face_info['late_minutes'] = record.late_minutes
-                    face_info['attendance_periods'] = record.attendance_periods
-                    face_info['is_new_attendance'] = created
-                    face_info['already_checked_in'] = not created
-                    face_info['time_in'] = record.time_in.strftime('%H:%M:%S') if record.time_in else current_time.strftime('%H:%M:%S')
-                    canonical = (student, record, created)
-            
-            recognized.append(face_info)
-        
-        response = {
-            'success': True,
-            'data': {
-                'faces_detected': len(results),
-                'recognized': recognized,
-                'timestamp': now.strftime('%H:%M:%S')
-            }
-        }
-        if canonical:
-            student, record, created = canonical
-            response.update({
-                'student': {'student_id': student.student_id, 'full_name': student.full_name},
-                'session': {
-                    'session_id': session_external_id(session_obj) if session_obj else None,
-                    'subject_id': session_obj.schedule.subject.code if session_obj else None,
-                    'subject_name': session_obj.schedule.subject.name if session_obj else None,
-                    'scheduled_time': record.scheduled_time.strftime('%H:%M:%S') if record.scheduled_time else None,
-                },
-                'attendance': attendance_payload(record, session_obj, already_checked_in=not created),
-            })
-        return JsonResponse(response)
-        
-    except json.JSONDecodeError:
-        return JsonResponse({
-            'success': False,
-            'error': 'Invalid JSON'
-        }, status=400)
-    except Exception:
-        return JsonResponse({
-            'success': False,
-            'error': 'Face recognition failed'
-        }, status=500)
-
-
 @require_http_methods(["GET"])
 @admin_api_required
 def api_registered_faces(request):
@@ -1463,7 +1723,7 @@ def api_session_attendance(request, session_id):
 
 
 def _session_roster_rows(session):
-    students = session.schedule.classroom.students.all().order_by('student_id')
+    students = session_students(session).order_by('student_id')
     records = {record.student_id: record for record in session.session_records.select_related('student')}
     scheduled_time = get_session_scheduled_time(session)
     rows = []
@@ -1588,8 +1848,7 @@ def api_import_attendance_csv(request):
     }, status=status)
 
 
-@kiosk_api_required
-@csrf_exempt
+@admin_api_required
 @require_http_methods(["POST"])
 def api_record_session_attendance(request):
     """API ghi nhận điểm danh cho 1 buổi học"""
@@ -1780,6 +2039,7 @@ def api_create_schedule(request):
             return JsonResponse({'success': False, 'error': 'Subject and class are required'}, status=400)
         subject = Subject.objects.get(id=int(subject_id))
         classroom = ClassRoom.objects.get(id=int(classroom_id))
+        semester = AcademicTerm.objects.get(pk=int(data['semester_id'])) if data.get('semester_id') else None
         day_of_week = int(data.get('day_of_week'))
         start_period = int(data.get('start_period'))
         end_period = int(data.get('end_period'))
@@ -1790,6 +2050,7 @@ def api_create_schedule(request):
         schedule, created = Schedule.objects.get_or_create(
             subject=subject,
             classroom=classroom,
+            semester=semester,
             day_of_week=day_of_week,
             start_period=start_period,
             end_period=end_period,
@@ -1807,7 +2068,7 @@ def api_create_schedule(request):
         }}, status=201 if created else 200)
     except json.JSONDecodeError:
         return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
-    except (Subject.DoesNotExist, ClassRoom.DoesNotExist):
+    except (Subject.DoesNotExist, ClassRoom.DoesNotExist, AcademicTerm.DoesNotExist):
         return JsonResponse({'success': False, 'error': 'Subject or class not found'}, status=404)
     except (TypeError, ValueError):
         return JsonResponse({'success': False, 'error': 'Invalid subject, class, or period values'}, status=400)

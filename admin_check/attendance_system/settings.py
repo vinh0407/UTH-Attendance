@@ -11,12 +11,21 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('UTH_SECRET_KEY', 'development-only-secret-change-before-deployment-9f1c2e7a')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DJANGO_DEBUG', '0') == '1'
+DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1'
 
-ALLOWED_HOSTS = [host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost').split(',') if host.strip()]
+ALLOWED_HOSTS = ['*']
 
 KIOSK_API_KEY = os.environ.get('UTH_KIOSK_API_KEY', 'development-kiosk-key-change-before-deployment')
+
+# Conservative defaults; calibrate against representative local camera images.
+FACE_SIMILARITY_THRESHOLD = float(os.environ.get('UTH_FACE_THRESHOLD', '0.55'))
+FACE_MATCH_MARGIN = float(os.environ.get('UTH_FACE_MATCH_MARGIN', '0.04'))
+FACE_MIN_DETECTION_SCORE = 0.6
+FACE_MIN_SIZE = 60
+FACE_MIN_SHARPNESS = 35.0
+FACE_CONFIRMATION_FRAMES = 3
+FACE_CONFIRMATION_WINDOW_SECONDS = 10
+FACE_CONFIRMATION_MIN_INTERVAL_SECONDS = 0.4
 
 # Increase max upload size for face images (50MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024

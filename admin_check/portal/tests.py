@@ -11,7 +11,8 @@ from django.test import Client, SimpleTestCase, TestCase, override_settings
 from .attendance_service import calculate_attendance_status, finalize_session_attendance, record_attendance_event
 from .attendance_import import import_csv_bytes
 from .attendance_archive import archive_attendance_record
-from .models import AttendanceRecord, AttendanceSession, ClassRoom, Grade, Schedule, Student, Subject
+from .models import AcademicTerm, AttendanceRecord, AttendanceSession, ClassRoom, Grade, GradeAuditLog, LeaveRequest, Schedule, Student, Subject
+from .student_attendance import student_course_attendance
 
 
 class AttendanceTimingTests(SimpleTestCase):
@@ -242,3 +243,347 @@ class StudentPortalIdentityTests(TestCase):
         self.assertEqual(client.post('/api/student/logout/', data='{}', content_type='application/json').status_code, 200)
         self.assertEqual(client.get('/api/student/me/profile/').status_code, 401)
         self.assertEqual(client.get('/admin-dashboard/').status_code, 200)
+
+
+class StudentGradeComponentTests(TestCase):
+    def setUp(self):
+        self.student = Student.objects.create(
+            student_id='2251128888',
+            full_name='Grade Test Student',
+            class_name='CN22A',
+        )
+        self.subject = Subject.objects.create(
+            code='AND304',
+            name='Lập trình Android',
+            credits=3,
+            weight_cc=0.10,
+            weight_gk=0.30,
+            weight_ck=0.60,
+            bonus_method='DIRECT',
+        )
+
+    def test_grouped_grades_calculation_with_bonus(self):
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='ATTENDANCE', score='8.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='MIDTERM', score='7.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='FINAL', score='8.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='BONUS', score='0.50')
+
+        client = Client()
+        client.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'class_name': 'CN22A',
+        }), content_type='application/json')
+
+        response = client.get('/api/student/me/dashboard/')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['data']
+        self.assertIn('grouped_grades', data)
+        group = next((g for g in data['grouped_grades'] if g['subject_id'] == 'AND304'), None)
+        self.assertIsNotNone(group)
+        self.assertEqual(group['cc'], 8.0)
+        self.assertEqual(group['gk'], 7.0)
+        self.assertEqual(group['ck'], 8.0)
+        self.assertEqual(group['bonus'], 0.5)
+        # 8*0.1 + 7*0.3 + 8*0.6 + 0.5 = 0.8 + 2.1 + 4.8 + 0.5 = 8.20
+        self.assertEqual(group['calculated_total'], 8.20)
+
+    def test_missing_component_grade_returns_none_for_missing_slot(self):
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='ATTENDANCE', score='9.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='MIDTERM', score='8.50')
+
+        client = Client()
+        client.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'class_name': 'CN22A',
+        }), content_type='application/json')
+
+        response = client.get('/api/student/me/dashboard/')
+        self.assertEqual(response.status_code, 200)
+        group = next((g for g in response.json()['data']['grouped_grades'] if g['subject_id'] == 'AND304'), None)
+        self.assertIsNotNone(group)
+        self.assertEqual(group['cc'], 9.0)
+        self.assertEqual(group['gk'], 8.5)
+        self.assertIsNone(group['ck'])
+        self.assertIsNone(group['bonus'])
+
+    def test_scale_4_and_letter_grade_conversion(self):
+        # 8*0.1 + 7*0.3 + 8*0.6 + 0.5 = 8.20 -> B+ (3.5)
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='ATTENDANCE', score='8.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='MIDTERM', score='7.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='FINAL', score='8.00')
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='BONUS', score='0.50')
+
+        client = Client()
+        client.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'class_name': 'CN22A',
+        }), content_type='application/json')
+
+        response = client.get('/api/student/me/dashboard/')
+        self.assertEqual(response.status_code, 200)
+        group = next((g for g in response.json()['data']['grouped_grades'] if g['subject_id'] == 'AND304'), None)
+        self.assertIsNotNone(group)
+        self.assertEqual(group['letter_grade'], 'B+')
+        self.assertEqual(group['gpa_scale_4'], 3.5)
+        self.assertIn(group['rank'], ['Good', 'Khá giỏi'])
+        self.assertEqual(response.json()['data']['cumulative_gpa_4'], 3.5)
+        self.assertIn(response.json()['data']['academic_rank'], ['Very Good', 'Giỏi'])
+
+    def test_student_password_login_and_change_password(self):
+        client = Client()
+        # Initial login using class_name fallback
+        login_res = client.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'password': 'CN22A',
+        }), content_type='application/json')
+        self.assertEqual(login_res.status_code, 200)
+
+        # Change password
+        change_res = client.post('/api/student/me/change-password/', data=json.dumps({
+            'old_password': 'CN22A',
+            'new_password': 'securepassword123',
+        }), content_type='application/json')
+        self.assertEqual(change_res.status_code, 200)
+
+        # Old password fails
+        client2 = Client()
+        fail_res = client2.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'password': 'CN22A',
+        }), content_type='application/json')
+        self.assertEqual(fail_res.status_code, 401)
+        self.assertEqual(fail_res.json()['error'], 'Student ID or class does not match an admin-registered student.')
+
+        # New password succeeds
+        success_res = client2.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'password': 'securepassword123',
+        }), content_type='application/json')
+        self.assertEqual(success_res.status_code, 200)
+
+    def test_admin_grade_update_creates_audit_log(self):
+        admin_user = User.objects.create_user('grade_admin', is_staff=True)
+        client = Client()
+        client.force_login(admin_user)
+
+        # Initial grade
+        Grade.objects.create(student=self.student, subject=self.subject, semester='2026-1', assessment_type='FINAL', score='6.50')
+
+        # Admin updates final score
+        payload = {
+            'student_id': self.student.student_id,
+            'subject_id': self.subject.code,
+            'semester': '2026-1',
+            'assessment_type': 'FINAL',
+            'score': 8.5,
+            'reason': 'Chấm phúc khảo bài thi cuối kỳ'
+        }
+        response = client.post('/api/admin/grades/update/', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+
+        # Verify grade updated
+        grade = Grade.objects.get(student=self.student, subject=self.subject, semester='2026-1', assessment_type='FINAL')
+        self.assertEqual(float(grade.score), 8.5)
+
+        # Verify audit log
+        log = GradeAuditLog.objects.filter(grade=grade).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.changed_by, admin_user)
+        self.assertEqual(float(log.before_score), 6.5)
+        self.assertEqual(float(log.after_score), 8.5)
+        self.assertEqual(log.reason, 'Chấm phúc khảo bài thi cuối kỳ')
+
+    def test_admin_dashboard_renders_with_enhanced_context(self):
+        admin_user = User.objects.create_user('dash_staff', is_staff=True)
+        client = Client()
+        client.force_login(admin_user)
+
+        response = client.get('/admin-dashboard/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('total_students', response.context)
+        self.assertIn('attendance_rate', response.context)
+        self.assertIn('subjects', response.context)
+        self.assertIn('recent_audits', response.context)
+        self.assertContains(response, 'UTH Operations')
+        self.assertContains(response, 'GradeAuditLog')
+
+
+class NewFeaturesIntegrationTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user('feature_admin', is_staff=True, is_superuser=True)
+        self.student = Student.objects.create(
+            student_id='2251129999',
+            full_name='Nguyen Van Test',
+            class_name='CN22A',
+        )
+        self.classroom = ClassRoom.objects.create(class_id='CN22A', name='Mathematics')
+        self.classroom.students.add(self.student)
+        self.subject = Subject.objects.create(code='MATH101', name='Mathematics I', credits=3)
+        self.term = AcademicTerm.objects.create(
+            code='2026-1',
+            name='Học kỳ 1 2026-2027',
+            starts_on=datetime.date(2026, 8, 1),
+            ends_on=datetime.date(2026, 12, 31),
+        )
+        self.schedule = Schedule.objects.create(
+            subject=self.subject,
+            classroom=self.classroom,
+            semester=self.term,
+            day_of_week=0,
+            start_period=1,
+            end_period=2,
+            room='A101',
+        )
+        self.session = AttendanceSession.objects.create(
+            schedule=self.schedule,
+            external_session_id='SES-NEW-001',
+            date=datetime.date(2026, 8, 24),
+            status='completed',
+        )
+        AttendanceRecord.objects.create(
+            attendance_id='ATT-NEW-001',
+            session=self.session,
+            student=self.student,
+            date=self.session.date,
+            status='present',
+            attendance_code='ON_TIME',
+            attendance_label='ON TIME',
+        )
+
+    def _login(self, client, class_name='CN22A'):
+        return client.post('/api/student/login/', data=json.dumps({
+            'student_id': self.student.student_id,
+            'class_name': class_name,
+        }), content_type='application/json')
+
+    def test_student_leave_request_and_admin_approval_flow(self):
+        client = Client()
+        self._login(client, class_name='Mathematics')
+
+        # Student submits leave request
+        payload = {
+            'date': '2026-08-24',
+            'subject_id': self.subject.code,
+            'reason': 'Nghỉ ốm có chỉ định bác sĩ',
+            'evidence_url': 'https://example.com/giay-kham.jpg',
+        }
+        create_res = client.post('/api/student/me/leave-requests/create/', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(create_res.status_code, 200)
+        self.assertTrue(create_res.json()['success'])
+        leave_id = create_res.json()['data']['id']
+
+        # Student checks leave requests list
+        list_res = client.get('/api/student/me/leave-requests/')
+        self.assertEqual(list_res.status_code, 200)
+        self.assertEqual(len(list_res.json()['data']), 1)
+        self.assertEqual(list_res.json()['data'][0]['status'], 'pending')
+
+        # Admin reviews and approves
+        admin_client = Client()
+        admin_client.force_login(self.admin)
+        review_res = admin_client.post(f'/api/admin/leave-requests/{leave_id}/review/', data=json.dumps({
+            'action': 'approve',
+            'review_note': 'Đã duyệt đơn nghỉ bệnh hợp lệ.'
+        }), content_type='application/json')
+        self.assertEqual(review_res.status_code, 200)
+        self.assertTrue(review_res.json()['success'])
+
+        # Verify LeaveRequest model updated
+        leave = LeaveRequest.objects.get(id=leave_id)
+        self.assertEqual(leave.status, 'approved')
+        self.assertEqual(leave.reviewed_by, self.admin)
+        self.assertIsNotNone(leave.reviewed_at)
+
+        # Verify AttendanceRecord updated to excused
+        rec = AttendanceRecord.objects.get(student=self.student, session=self.session)
+        self.assertEqual(rec.status, 'excused')
+        self.assertEqual(rec.attendance_code, 'EXCUSED')
+
+    def test_excused_absence_does_not_bar_student_from_exam(self):
+        # Create completed sessions
+        # 3 unexcused absences (ABSENCE_LIMIT = 3)
+        sessions = []
+        for i in range(1, 4):
+            ses = AttendanceSession.objects.create(
+                schedule=self.schedule,
+                external_session_id=f'SES-ABS-{i}',
+                date=datetime.date(2026, 8, 25 + i),
+                status='completed',
+            )
+            AttendanceRecord.objects.create(
+                attendance_id=f'ATT-ABS-{i}',
+                session=ses,
+                student=self.student,
+                date=ses.date,
+                status='absent',
+                attendance_code='ABSENT',
+            )
+            sessions.append(ses)
+
+        # 1 excused absence session
+        ses_excused = AttendanceSession.objects.create(
+            schedule=self.schedule,
+            external_session_id='SES-EXC-1',
+            date=datetime.date(2026, 8, 30),
+            status='completed',
+        )
+        AttendanceRecord.objects.create(
+            attendance_id='ATT-EXC-1',
+            session=ses_excused,
+            student=self.student,
+            date=ses_excused.date,
+            status='excused',
+            attendance_code='EXCUSED',
+        )
+
+        res = student_course_attendance(self.student, datetime.date(2026, 9, 1))
+        course = next(c for c in res['courses'] if c['subject_id'] == self.subject.code)
+        self.assertEqual(course['absent_sessions'], 3)
+        self.assertEqual(course['excused_sessions'], 1)
+        # With 3 unexcused absences, still at warning, not failed (barred)
+        self.assertEqual(course['attendance_outcome'], 'warning')
+        self.assertEqual(course['danger_level'], 'warning')
+        self.assertFalse(course['exam_prohibited'])
+
+    def test_admin_grade_bulk_csv_import_and_template_export(self):
+        admin_client = Client()
+        admin_client.force_login(self.admin)
+
+        # 1. Download CSV template
+        tpl_res = admin_client.get(f'/api/admin/grades/template.csv?subject_code={self.subject.code}&semester=2026-1')
+        self.assertEqual(tpl_res.status_code, 200)
+        self.assertIn('attachment;', tpl_res.headers.get('Content-Disposition', ''))
+        tpl_content = tpl_res.content.decode('utf-8-sig')
+        self.assertIn('student_id', tpl_content)
+        self.assertIn(self.student.student_id, tpl_content)
+
+        # 2. Upload bulk grade CSV
+        csv_content = (
+            "student_id,full_name,class_name,subject_code,semester,cc,gk,ck,bonus,reason\n"
+            f"{self.student.student_id},{self.student.full_name},CN22A,{self.subject.code},2026-1,9.0,8.5,9.5,1.0,Nhập điểm CSV\n"
+        )
+        csv_file = io.BytesIO(csv_content.encode('utf-8'))
+        csv_file.name = 'bulk_grades.csv'
+        import_res = admin_client.post('/api/admin/grades/import.csv', {'file': csv_file})
+        self.assertEqual(import_res.status_code, 200)
+        self.assertTrue(import_res.json()['success'])
+        self.assertGreater(import_res.json()['updated_grades_count'], 0)
+
+        # Verify Grade records
+        cc = Grade.objects.get(student=self.student, subject=self.subject, semester='2026-1', assessment_type='ATTENDANCE')
+        gk = Grade.objects.get(student=self.student, subject=self.subject, semester='2026-1', assessment_type='MIDTERM')
+        ck = Grade.objects.get(student=self.student, subject=self.subject, semester='2026-1', assessment_type='FINAL')
+        bonus = Grade.objects.get(student=self.student, subject=self.subject, semester='2026-1', assessment_type='BONUS')
+
+        self.assertEqual(float(cc.score), 9.0)
+        self.assertEqual(float(gk.score), 8.5)
+        self.assertEqual(float(ck.score), 9.5)
+        self.assertEqual(float(bonus.score), 1.0)
+
+        # Verify GradeAuditLog created
+        logs = GradeAuditLog.objects.filter(grade__student=self.student)
+        self.assertGreaterEqual(logs.count(), 4)
+
+
+

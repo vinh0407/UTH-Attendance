@@ -10,6 +10,7 @@ const deviceId = new URLSearchParams(window.location.search).get('device_id') ||
 el('device-label').textContent = deviceId;
 
 function setStatus(kind, title, copy, label = 'Ready to check in', icon = '◎') {
+  clearTimeout(state.resetTimer);
   el('state-icon').textContent = icon;
   el('state-label').textContent = label;
   el('state-title').innerHTML = title;
@@ -126,7 +127,7 @@ function drawDetections(faces) {
 }
 
 async function recognize() {
-  if (state.sending || !state.session || !video.videoWidth || video.readyState < 2) return;
+  if (document.hidden || state.sending || !state.session || !video.videoWidth || video.readyState < 2) return;
   state.sending = true; const started = performance.now();
   try {
     const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = Math.round(640 * video.videoHeight / video.videoWidth); canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
@@ -138,14 +139,20 @@ async function recognize() {
       error.code = payload.code || '';
       throw error;
     }
+    setConnection('online', 'Connected');
     const faces = payload.data?.recognized || []; drawDetections(faces);
     if (faces.length > 1) return setStatus('multiple', 'Please keep only<br>one person in frame', 'Wait until there is only one face inside the guide.', 'MULTIPLE FACES', '!');
     if (!faces.length) return setStatus('idle', 'Place your face<br>inside the guide', 'Look straight at the camera. Recognition starts automatically.');
     const face = faces[0];
-    if (face.name === 'Unknown') return setStatus('unknown', 'Face not<br>recognized', 'Look straight at the camera and keep your face inside the guide.', 'UNKNOWN FACE', '!');
+    if (face.name === 'Unknown') return setStatus('unknown', 'Adjust your<br>position', face.quality?.message || 'Look straight at the camera.', 'FACE CHECK', '!');
+    if (face.status === 'verifying') {
+      const progress = face.verification || {};
+      return setStatus('recognizing', 'Hold still<br>for verification', `${progress.hits || 0} of ${progress.required || 3} clear frames confirmed. Keep looking at the camera.`, 'VERIFYING', '…');
+    }
     if (face.status === 'wrong_class' || face.attendance_code === 'WRONG_CLASS') return showResult(face, false);
     setStatus('recognizing', 'Verifying your<br>attendance', 'Checking your record against the current class session.', 'RECOGNIZING', '…');
-    if (face.already_checked_in || (face.status === 'present' && !face.is_new_attendance)) showResult(face, true); else showResult(face, false);
+    if (!face.attendance_code) return setStatus('unknown', 'Unable to confirm<br>identity', 'Please contact your lecturer.', 'NOT RECORDED', '!');
+    showResult(face, Boolean(face.already_checked_in));
   } catch (error) {
     console.error('Kiosk recognition failed', error);
     const authFailure = error?.status === 401;

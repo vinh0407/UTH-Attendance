@@ -20,8 +20,7 @@ from .attendance_service import METHOD_FACIAL_RECOGNITION, calculate_attendance_
 from .views import kiosk_api_required, admin_api_required
 
 
-@kiosk_api_required
-@csrf_exempt
+@admin_api_required
 @require_http_methods(["POST"])
 def api_test_image(request):
     """

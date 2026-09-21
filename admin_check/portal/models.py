@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.contrib.auth.hashers import make_password, check_password
 
 
 class Student(models.Model):
@@ -9,6 +10,7 @@ class Student(models.Model):
     full_name = models.CharField(max_length=100, verbose_name="Full name")
     email = models.EmailField(blank=True, verbose_name="Email")
     class_name = models.CharField(max_length=50, blank=True, verbose_name="Class")
+    password_hash = models.CharField(max_length=128, blank=True, default='', verbose_name="Password hash")
     face_encoding = models.BinaryField(null=True, blank=True, verbose_name="Face encoding data")
     face_image = models.ImageField(upload_to='faces/', null=True, blank=True, verbose_name="Face image")
     is_registered = models.BooleanField(default=False, verbose_name="Face registered")
@@ -23,13 +25,35 @@ class Student(models.Model):
     def __str__(self):
         return f"{self.student_id} - {self.full_name}"
 
+    def set_password(self, raw_password):
+        self.password_hash = make_password(raw_password)
+        if self.user:
+            self.user.set_password(raw_password)
+            self.user.save(update_fields=['password'])
+
+    def check_password(self, raw_password):
+        if not self.password_hash:
+            if self.user and self.user.has_usable_password():
+                return self.user.check_password(raw_password)
+            return False
+        return check_password(raw_password, self.password_hash)
+
 
 class Subject(models.Model):
     """Model lưu thông tin môn học"""
     code = models.CharField(max_length=20, unique=True, verbose_name="Subject code")
     name = models.CharField(max_length=100, verbose_name="Subject name")
     teacher = models.CharField(max_length=100, blank=True, verbose_name="Teacher")
+    teacher_email = models.EmailField(blank=True)
+    teacher_phone = models.CharField(max_length=30, blank=True)
+    teacher_department = models.CharField(max_length=150, blank=True)
+    teacher_office = models.CharField(max_length=100, blank=True)
+    teacher_bio = models.TextField(blank=True)
     credits = models.IntegerField(default=3, verbose_name="Credits")
+    weight_cc = models.DecimalField(max_digits=4, decimal_places=2, default=0.10, verbose_name="Attendance Weight")
+    weight_gk = models.DecimalField(max_digits=4, decimal_places=2, default=0.30, verbose_name="Midterm Weight")
+    weight_ck = models.DecimalField(max_digits=4, decimal_places=2, default=0.60, verbose_name="Final Weight")
+    bonus_method = models.CharField(max_length=20, default='DIRECT', verbose_name="Bonus Method")
     
     class Meta:
         verbose_name = "Subject"
@@ -52,6 +76,20 @@ class ClassRoom(models.Model):
     
     def __str__(self):
         return f"{self.class_id} - {self.name}"
+
+
+class AcademicTerm(models.Model):
+    code = models.CharField(max_length=30, unique=True)
+    name = models.CharField(max_length=100)
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+
+    class Meta:
+        ordering = ['-starts_on', 'code']
+        constraints = [models.CheckConstraint(condition=models.Q(ends_on__gte=models.F('starts_on')), name='valid_academic_term_dates')]
+
+    def __str__(self):
+        return self.name
 
 
 class Schedule(models.Model):
@@ -86,6 +124,7 @@ class Schedule(models.Model):
     end_period = models.IntegerField(choices=PERIOD_CHOICES, verbose_name="End period")
     room = models.CharField(max_length=50, blank=True, verbose_name="Room")
     is_active = models.BooleanField(default=True, verbose_name="Active")
+    semester = models.ForeignKey(AcademicTerm, null=True, blank=True, on_delete=models.PROTECT, verbose_name='Semester')
     
     class Meta:
         verbose_name = "Schedule"
@@ -148,7 +187,8 @@ class AttendanceSession(models.Model):
         return self.session_records.filter(status='present').count()
     
     def get_total_students(self):
-        return self.schedule.classroom.students.count()
+        from .enrollment import session_students
+        return session_students(self).count()
 
 
 class AttendanceRecord(models.Model):
@@ -157,6 +197,7 @@ class AttendanceRecord(models.Model):
         ('present', 'Present'),
         ('late', 'Late'),
         ('absent', 'Absent'),
+        ('excused', 'Excused'),
     ]
 
     attendance_id = models.CharField(max_length=40, unique=True, null=True, blank=True, verbose_name="Attendance ID")
@@ -191,6 +232,31 @@ class AttendanceRecord(models.Model):
         return f"{self.student.full_name} - {self.date}{session_info} - {self.get_status_display()}"
 
 
+class AttendanceAuditLog(models.Model):
+    record = models.ForeignKey(AttendanceRecord, on_delete=models.CASCADE, related_name='audit_logs')
+    changed_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    reason = models.CharField(max_length=500)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ['-changed_at', '-pk']
+
+
+class RecognitionWindow(models.Model):
+    """Short-lived confirmation state shared across Django workers."""
+    session = models.ForeignKey(AttendanceSession, on_delete=models.CASCADE)
+    device_id = models.CharField(max_length=80)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE)
+    first_seen = models.DateTimeField()
+    last_seen = models.DateTimeField()
+    frame_hashes = models.JSONField(default=list)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['session', 'device_id'], name='uniq_recognition_device_session')]
+
+
 class Grade(models.Model):
     """Điểm thành phần của sinh viên theo học phần và học kỳ."""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='grades')
@@ -211,6 +277,54 @@ class Grade(models.Model):
 
     def __str__(self):
         return f"{self.student.student_id} - {self.subject.code} - {self.assessment_type}: {self.score}"
+
+
+class GradeAuditLog(models.Model):
+    """Lưu lịch sử thay đổi điểm số phục vụ đối soát và khiếu nại."""
+    grade = models.ForeignKey(Grade, on_delete=models.CASCADE, related_name='audit_logs')
+    changed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    reason = models.CharField(max_length=500, blank=True, default='')
+    before_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    after_score = models.DecimalField(max_digits=5, decimal_places=2)
+
+    class Meta:
+        verbose_name = "Grade audit log"
+        verbose_name_plural = "Grade audit logs"
+        ordering = ['-changed_at', '-pk']
+
+    def __str__(self):
+        return f"{self.grade} -> {self.after_score} ({self.changed_at})"
+
+
+class LeaveRequest(models.Model):
+    """Đơn xin nghỉ phép trực tuyến của sinh viên."""
+    STATUS_CHOICES = [
+        ('pending', 'Chờ duyệt'),
+        ('approved', 'Đã duyệt'),
+        ('rejected', 'Từ chối'),
+    ]
+
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='leave_requests')
+    subject = models.ForeignKey(Subject, on_delete=models.CASCADE, related_name='leave_requests', null=True, blank=True)
+    session = models.ForeignKey(AttendanceSession, on_delete=models.SET_NULL, null=True, blank=True, related_name='leave_requests')
+    date = models.DateField(verbose_name="Ngày xin nghỉ")
+    reason = models.TextField(verbose_name="Lý do xin nghỉ")
+    evidence_url = models.CharField(max_length=500, blank=True, default='', verbose_name="Minh chứng / Ghi chú giấy tờ")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reviewed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='reviewed_leaves')
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.CharField(max_length=500, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Leave request"
+        verbose_name_plural = "Leave requests"
+        ordering = ['-created_at', '-pk']
+
+    def __str__(self):
+        return f"{self.student.full_name} - {self.date} ({self.get_status_display()})"
 
 
 class Camera(models.Model):
@@ -252,3 +366,73 @@ class SystemStats(models.Model):
 
     def __str__(self):
         return f"Stats - {self.date}"
+
+class AcademicPolicy(models.Model):
+    name = models.CharField(max_length=150)
+    is_demo = models.BooleanField(default=True)
+    pass_score = models.DecimalField(max_digits=4, decimal_places=2, default=5)
+    min_scholarship_average = models.DecimalField(max_digits=4, decimal_places=2, default=8)
+    min_scholarship_credits = models.PositiveSmallIntegerField(default=12)
+    min_conduct_score = models.PositiveSmallIntegerField(default=80)
+    graduation_credits = models.PositiveSmallIntegerField(default=120)
+    min_graduation_average = models.DecimalField(max_digits=4, decimal_places=2, default=5)
+    max_term_credits = models.PositiveSmallIntegerField(default=24)
+    required_subjects = models.ManyToManyField(Subject, blank=True)
+    require_english = models.BooleanField(default=True)
+    require_physical_education = models.BooleanField(default=True)
+    require_defense = models.BooleanField(default=True)
+    require_financial_clearance = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(pass_score__gte=0, pass_score__lte=10, min_scholarship_average__gte=0, min_scholarship_average__lte=10, min_graduation_average__gte=0, min_graduation_average__lte=10, min_conduct_score__lte=100), name='valid_academic_policy_scores')]
+
+    def __str__(self):
+        return self.name
+
+
+class StudentAcademicProfile(models.Model):
+    student = models.OneToOneField(Student, on_delete=models.CASCADE, related_name='academic_profile')
+    policy = models.ForeignKey(AcademicPolicy, on_delete=models.PROTECT, null=True, blank=True)
+    english_certified = models.BooleanField(null=True, blank=True)
+    physical_education_completed = models.BooleanField(null=True, blank=True)
+    defense_completed = models.BooleanField(null=True, blank=True)
+    financial_clearance = models.BooleanField(null=True, blank=True)
+
+    def __str__(self):
+        return str(self.student)
+
+
+class TermAssessment(models.Model):
+    student = models.ForeignKey(Student, on_delete=models.CASCADE)
+    semester = models.ForeignKey(AcademicTerm, on_delete=models.PROTECT)
+    conduct_score = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['student', 'semester'], name='unique_student_term_assessment'), models.CheckConstraint(condition=models.Q(conduct_score__lte=100) | models.Q(conduct_score__isnull=True), name='valid_conduct_score')]
+
+
+class CourseOffering(models.Model):
+    schedule = models.OneToOneField(Schedule, on_delete=models.PROTECT, related_name='offering')
+    capacity = models.PositiveSmallIntegerField(default=40)
+    opens_on = models.DateField()
+    closes_on = models.DateField()
+    is_open = models.BooleanField(default=True)
+    prerequisites = models.ManyToManyField(Subject, blank=True, related_name='required_for_offerings')
+    revision = models.PositiveIntegerField(default=0, editable=False)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(closes_on__gte=models.F('opens_on')), name='valid_registration_window'), models.CheckConstraint(condition=models.Q(capacity__gte=1), name='positive_offering_capacity')]
+
+    def __str__(self):
+        return str(self.schedule)
+
+
+class CourseRegistration(models.Model):
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='course_registrations')
+    offering = models.ForeignKey(CourseOffering, on_delete=models.PROTECT, related_name='registrations')
+    status = models.CharField(max_length=20, choices=[('registered', 'Registered'), ('cancelled', 'Cancelled')], default='registered')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['student', 'offering'], name='unique_student_offering')]

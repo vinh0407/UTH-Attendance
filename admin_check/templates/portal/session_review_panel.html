@@ -1,0 +1,34 @@
+{% load static %}
+<section class="panel" id="session-review" data-session-id="{{ session.id }}">
+  <div class="panel-head">
+    <div><p class="eyebrow">LIVE REVIEW</p><h2>Verify & correct attendance</h2>
+      <p class="muted">Corrections require a reason. Check-in times use the existing attendance rules.</p></div>
+    <div class="header-actions"><a class="button button-secondary" href="{% url 'portal:api_export_session_csv' session.id %}">Export CSV</a><button type="button" class="button button-secondary" id="review-refresh">Refresh</button></div>
+  </div>
+  <p class="review-notice" id="review-status" role="status" aria-live="polite">Loading session records…</p>
+  <div class="table-wrap"><table>
+    <caption class="sr-only">Live attendance and correction history</caption>
+    <thead><tr><th>Student</th><th>Result</th><th>Check-in</th><th>Late</th><th>Periods</th><th>Device</th><th>Similarity</th><th>History / method</th><th>Action</th></tr></thead>
+    <tbody id="review-rows"></tbody>
+  </table></div>
+</section>
+<dialog id="review-dialog" class="review-dialog" aria-labelledby="review-title">
+  <form id="review-form">
+    {% csrf_token %}
+    <div class="panel-head"><h2 id="review-title">Correct attendance</h2>
+      <button type="button" id="review-close" class="button button-secondary" aria-label="Close correction dialog">Close</button></div>
+    <p id="review-student" class="review-student"></p>
+    <label for="review-outcome">Attendance</label>
+    <select id="review-outcome" name="outcome"><option value="checked_in">Checked in — classify by arrival time</option><option value="absent">Absent — full session</option></select>
+    <label for="review-time">Actual arrival time (local time)</label>
+    <input id="review-time" type="time" step="1" required name="check_in_time">
+    <label for="review-reason">Reason for correction</label>
+    <textarea id="review-reason" name="reason" rows="3" maxlength="500" required placeholder="For example: camera unavailable; arrival confirmed by lecturer."></textarea>
+    <p class="muted">Your account, the original result and the corrected result will be recorded.</p>
+    <p id="review-error" role="alert"></p>
+    <div class="header-actions"><button type="button" id="review-cancel" class="button button-secondary">Cancel</button>
+      <button type="submit" id="review-save" class="button button-primary">Save correction</button></div>
+  </form>
+</dialog>
+<link rel="stylesheet" href="{% static 'css/session-review.css' %}">
+<script src="{% static 'js/session-review.js' %}" defer></script>

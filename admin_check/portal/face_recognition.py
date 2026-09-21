@@ -13,6 +13,8 @@ import warnings
 import importlib.metadata
 import ctypes
 import tempfile
+import threading
+from .face_quality import assess_face, EmbeddingIndex
 from django.conf import settings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -28,6 +30,9 @@ MY_FACES_DIR = os.fspath(settings.STUDENT_DATA_DIR)  # Hồ sơ sinh viên + ả
 
 # Singleton pattern cho FaceAnalysis app
 _face_app = None
+_index_cache = None
+_index_lock = threading.RLock()
+_model_lock = threading.RLock()
 
 
 def face_engine_status():
@@ -104,18 +109,20 @@ def _cuda_provider_usable(available=None):
 def get_face_app():
     """Lấy instance FaceAnalysis (singleton để tránh load model nhiều lần)"""
     global _face_app
-    if _face_app is None:
-        try:
-            from insightface.app import FaceAnalysis
-        except ImportError as exc:
-            raise RuntimeError(
-                "InsightFace is not ready. Reinstall InsightFace and its AI dependencies before opening the camera."
-            ) from exc
-        providers, ctx_id = _inference_providers()
-        print(f"Loading InsightFace model ({providers[0]})...")
-        _face_app = FaceAnalysis(name=MODEL_NAME, providers=providers)
-        _face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
-        print("Model loaded successfully.")
+    with _model_lock:
+        if _face_app is None:
+            try:
+                from insightface.app import FaceAnalysis
+            except ImportError as exc:
+                raise RuntimeError(
+                    "InsightFace is not ready. Reinstall InsightFace and its AI dependencies before opening the camera."
+                ) from exc
+            providers, ctx_id = _inference_providers()
+            print(f"Loading InsightFace model ({providers[0]})...")
+            app = FaceAnalysis(name=MODEL_NAME, providers=providers, allowed_modules=['detection', 'recognition'])
+            app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+            _face_app = app
+            print("Model loaded successfully.")
     return _face_app
 
 
@@ -167,8 +174,10 @@ def register_face(name, image, student_id='', class_name='', email=''):
         return False, "No face was detected in the image"
     
     if len(faces) > 1:
-        # Chọn khuôn mặt lớn nhất
-        faces = sorted(faces, key=lambda x: (x.bbox[2]-x.bbox[0]) * (x.bbox[3]-x.bbox[1]), reverse=True)
+        return False, 'Keep exactly one face in each registration image.'
+    quality = assess_face(image, faces[0])
+    if not quality['ok']:
+        return False, quality['message']
     
     embedding = faces[0].embedding
     
@@ -212,93 +221,45 @@ def register_face(name, image, student_id='', class_name='', email=''):
     return True, f"Face registered successfully for {name}"
 
 
+def _embedding_index():
+    global _index_cache
+    with _index_lock:
+        try:
+            stat = os.stat(DATABASE_FILE)
+            signature = (DATABASE_FILE, stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except FileNotFoundError:
+            signature = (DATABASE_FILE, None)
+        if _index_cache is None or _index_cache[0] != signature:
+            _index_cache = (signature, EmbeddingIndex(load_database()))
+        return _index_cache[1]
+
+
 def recognize_face(image):
-    """
-    Nhận diện khuôn mặt trong ảnh
-    Args:
-        image: numpy array (BGR image từ OpenCV)
-    Returns:
-        list of dict: [{'name': str, 'confidence': float, 'bbox': [x1,y1,x2,y2]}]
-    """
-    app = get_face_app()
-    database = load_database()
-    
-    if not database:
-        return []
-    
-    faces = app.get(image)
+    """Return every detected face, including quality feedback for rejected faces."""
+    faces = get_face_app().get(image)
+    index = _embedding_index()
     results = []
-    
     for face in faces:
-        current_embedding = face.embedding
-        best_name = "Unknown"
-        best_score = 0.0
-        
-        for db_name, embeddings_list in database.items():
-            for db_embedding in embeddings_list:
-                sim = np.dot(current_embedding, db_embedding) / (
-                    np.linalg.norm(current_embedding) * np.linalg.norm(db_embedding)
-                )
-                if sim > best_score:
-                    best_score = sim
-                    if sim > THRESHOLD:
-                        best_name = db_name
-        
-        bbox = face.bbox.astype(int).tolist()
-        results.append({
-            'name': best_name,
-            'confidence': float(best_score * 100),
-            'bbox': bbox
-        })
-    
+        quality = assess_face(image, face)
+        name, score = 'Unknown', 0.0
+        if quality['ok']:
+            name, score, code = index.match(
+                face.embedding, settings.FACE_SIMILARITY_THRESHOLD, settings.FACE_MATCH_MARGIN,
+            )
+            if code != 'OK':
+                quality = {
+                    'ok': False, 'code': code,
+                    'message': ('Match is too close to another student. Try a clearer angle.'
+                                if code == 'AMBIGUOUS_MATCH' else 'Face is not recognized. Contact your lecturer.'),
+                }
+        results.append({'name': name, 'confidence': float(score * 100),
+                        'bbox': face.bbox.astype(int).tolist(), 'quality': quality})
     return results
 
 
 def recognize_frame(frame, scale=0.5):
-    """
-    Nhận diện khuôn mặt trong frame video (tối ưu cho realtime)
-    Args:
-        frame: numpy array (BGR image từ OpenCV)
-        scale: tỉ lệ resize để tăng tốc (0.5 = 50%)
-    Returns:
-        list of dict với bbox đã scale về kích thước gốc
-    """
-    # Resize để xử lý nhanh hơn
-    small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
-    
-    app = get_face_app()
-    database = load_database()
-    
-    if not database:
-        return []
-    
-    faces = app.get(small_frame)
-    results = []
-    
-    for face in faces:
-        current_embedding = face.embedding
-        best_name = "Unknown"
-        best_score = 0.0
-        
-        for db_name, embeddings_list in database.items():
-            for db_embedding in embeddings_list:
-                sim = np.dot(current_embedding, db_embedding) / (
-                    np.linalg.norm(current_embedding) * np.linalg.norm(db_embedding)
-                )
-                if sim > best_score:
-                    best_score = sim
-                    if sim > THRESHOLD:
-                        best_name = db_name
-        
-        # Scale bbox về kích thước gốc
-        bbox = (face.bbox / scale).astype(int).tolist()
-        results.append({
-            'name': best_name,
-            'confidence': float(best_score * 100),
-            'bbox': bbox
-        })
-    
-    return results
+    """Keep coordinates/quality in original pixels; InsightFace resizes internally."""
+    return recognize_face(frame)
 
 
 def draw_results(frame, results):
