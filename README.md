@@ -292,9 +292,13 @@ UTH-Attendance/
 |   |-- screenshots/                  # High-resolution application captures
 |   |-- REFERENCE_ANALYSIS_AND_INTEGRATION.md
 |   `-- STUDENT_ATTENDANCE_QUOTA.md
-|-- scripts/                          # Automation utilities
-|   |-- capture_screenshots.py        # Automated Playwright capture script
-|   `-- verify_english_portal.py      # Localization and anti-translation test suite
+|-- legacy/                           # Standalone OpenCV prototype archive
+|   `-- project.py                    # Original desktop camera CLI check-in prototype
+|-- scripts/                          # Automation, localization, and testing utilities
+|   |-- capture_screenshots.py        # Automated Playwright visual QA capture script
+|   |-- test_portal_utils.mjs         # Portal client utility test suite
+|   |-- translate_db_to_en.py         # Database localization and demo seeder
+|   `-- verify_english_portal.py      # Automated localization and anti-translation test suite
 |-- .gitignore                        # Git ignore specifications
 `-- README.md                         # Project documentation
 ```

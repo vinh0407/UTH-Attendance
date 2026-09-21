@@ -1,5 +1,0 @@
-.drawer-scrim{display:none}
-@media (max-width:760px){
-  .drawer-scrim{position:fixed;z-index:19;display:block;inset:0;border:0;background:rgba(8,52,95,.25)}
-  .drawer-scrim[hidden]{display:none}
-}
